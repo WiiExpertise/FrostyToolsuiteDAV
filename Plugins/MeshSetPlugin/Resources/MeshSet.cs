@@ -498,6 +498,7 @@ namespace MeshSetPlugin.Resources
                     case (int)ProfileVersion.StarWarsBattlefrontII:
                     case (int)ProfileVersion.Battlefield5:
                     case (int)ProfileVersion.StarWarsSquadrons:
+                    case (int)ProfileVersion.StarWarsBattlefront:
                         return 2;
                     default: return 1;
                 }
@@ -548,7 +549,7 @@ namespace MeshSetPlugin.Resources
 
             if (ProfilesLibrary.IsLoaded(ProfileVersion.MirrorsEdgeCatalyst, ProfileVersion.Battlefield1,
                 ProfileVersion.StarWarsBattlefrontII, ProfileVersion.Battlefield5,
-                ProfileVersion.StarWarsSquadrons))
+                ProfileVersion.StarWarsSquadrons, ProfileVersion.StarWarsBattlefront))
             {
                 m_offset2 = reader.ReadLong();
             }
@@ -600,7 +601,7 @@ namespace MeshSetPlugin.Resources
                 m_materialId = reader.ReadInt();
                 if (!ProfilesLibrary.IsLoaded(ProfileVersion.DragonAgeInquisition, ProfileVersion.Battlefield4,
                     ProfileVersion.PlantsVsZombiesGardenWarfare, ProfileVersion.NeedForSpeedRivals,
-                    ProfileVersion.NeedForSpeedEdge))
+                    ProfileVersion.NeedForSpeedEdge, ProfileVersion.StarWarsBattlefront))
                 {
                     m_lightMapUvMappingIndex = reader.ReadUInt();
                 }
@@ -655,7 +656,7 @@ namespace MeshSetPlugin.Resources
                 // MEC/BF1/SWBF2/SWS
                 else if (ProfilesLibrary.IsLoaded(ProfileVersion.MirrorsEdgeCatalyst, ProfileVersion.Battlefield1,
                     ProfileVersion.StarWarsBattlefrontII, ProfileVersion.Battlefield5,
-                    ProfileVersion.StarWarsSquadrons))
+                    ProfileVersion.StarWarsSquadrons, ProfileVersion.StarWarsBattlefront))
                 {
                     reader.ReadUInt();
                     reader.ReadUInt();
@@ -790,6 +791,7 @@ namespace MeshSetPlugin.Resources
                 switch (ProfilesLibrary.DataVersion)
                 {
                     case (int)ProfileVersion.MassEffectAndromeda:
+                    case (int)ProfileVersion.StarWarsBattlefront:
                         count = 48;
                         break;
                     case (int)ProfileVersion.NeedForSpeed:
@@ -797,7 +799,6 @@ namespace MeshSetPlugin.Resources
                     case (int)ProfileVersion.NeedForSpeedPayback:
                         count = 40;
                         break;
-                    case (int)ProfileVersion.StarWarsBattlefront:
                     case (int)ProfileVersion.MirrorsEdgeCatalyst:
                     case (int)ProfileVersion.Fifa17:
                     case (int)ProfileVersion.Battlefield1:
@@ -1217,6 +1218,7 @@ namespace MeshSetPlugin.Resources
                     case (int)ProfileVersion.StarWarsBattlefrontII:
                     case (int)ProfileVersion.Battlefield5:
                     case (int)ProfileVersion.StarWarsSquadrons:
+                    case (int)ProfileVersion.StarWarsBattlefront:
                         return true;
                     default:
                         return false;

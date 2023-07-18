@@ -957,7 +957,7 @@ namespace FrostySdk
                 {
                     compressionType = CompressionType.ZStd;
                 }
-                else if (ProfilesLibrary.IsLoaded(ProfileVersion.DragonAgeInquisition, ProfileVersion.Battlefield4))
+                else if (ProfilesLibrary.IsLoaded(ProfileVersion.DragonAgeInquisition, ProfileVersion.Battlefield4, ProfileVersion.StarWarsBattlefront))
                 {
                     compressionType = CompressionType.ZLib;
                 }

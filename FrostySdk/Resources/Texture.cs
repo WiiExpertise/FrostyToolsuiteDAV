@@ -143,9 +143,13 @@ namespace FrostySdk.Resources
             Width = reader.ReadUShort();
             Height = reader.ReadUShort();
             Depth = reader.ReadUShort();
-            if (ProfilesLibrary.IsLoaded(ProfileVersion.NeedForSpeedUnbound, ProfileVersion.DeadSpace))
+            if (ProfilesLibrary.IsLoaded(ProfileVersion.NeedForSpeedUnbound, ProfileVersion.DeadSpace, ProfileVersion.StarWarsBattlefront))
             {
                 m_sliceCount = reader.ReadByte();
+                if (ProfilesLibrary.IsLoaded(ProfileVersion.StarWarsBattlefront))
+                {
+                    reader.ReadByte();
+                }
             }
             else
             {

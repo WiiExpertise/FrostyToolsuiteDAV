@@ -1453,7 +1453,7 @@ namespace FrostySdk.Managers
             using (DbReader reader = new DbReader(new FileStream(filename, FileMode.Open, FileAccess.Read), m_fileSystem.CreateDeobfuscator()))
                 toc = reader.ReadDbObject();
 
-            if (isBase && !(ProfilesLibrary.DataVersion == (int)ProfileVersion.DragonAgeInquisition || ProfilesLibrary.DataVersion == (int)ProfileVersion.Battlefield4 || ProfilesLibrary.DataVersion == (int)ProfileVersion.NeedForSpeed || ProfilesLibrary.DataVersion == (int)ProfileVersion.PlantsVsZombiesGardenWarfare2 || ProfilesLibrary.DataVersion == (int)ProfileVersion.NeedForSpeedRivals ||
+            if (isBase && !(ProfilesLibrary.DataVersion == (int)ProfileVersion.DragonAgeInquisition || ProfilesLibrary.DataVersion == (int)ProfileVersion.StarWarsBattlefront || ProfilesLibrary.DataVersion == (int)ProfileVersion.Battlefield4 || ProfilesLibrary.DataVersion == (int)ProfileVersion.NeedForSpeed || ProfilesLibrary.DataVersion == (int)ProfileVersion.PlantsVsZombiesGardenWarfare2 || ProfilesLibrary.DataVersion == (int)ProfileVersion.NeedForSpeedRivals ||
                 ProfilesLibrary.DataVersion == (int)ProfileVersion.PlantsVsZombiesGardenWarfare))
             {
                 // dont process base toc chunks unless the patch one only 
