@@ -1,13 +1,14 @@
 ﻿{
   "Name": "GW2.Main_Win64_Retail",
   "DisplayName": "Plants vs Zombies™ Garden Warfare 2",
-  "CacheName": "nfs14",
-  "Deobfuscator": "Legacy",
-  "AssetLoader": "Standard",
+  "InternalName": "pvz2",
+  "TypeInfoSignature" : "",
+  "HasStrippedTypeNames": false,
   "DataVersion": 20160222,
+  "FrostbiteVersion": "2014.4.11",
   "Sources": [
     {
-      "Path": "Update\\Patch\\Data",
+      "Path": "Update/Patch/Data",
       "SubDirs": false
     },
     {
@@ -19,8 +20,6 @@
       "SubDirs": false
     }
   ],
-  "SdkFileName": "PVZ2SDK",
-  "BannerPath": "PVZ2",
   "EbxVersion": 2,
   "RequiresKey": false,
   "MustAddChunks": false,

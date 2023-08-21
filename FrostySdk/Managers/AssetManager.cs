@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using Frosty.Sdk.Interfaces;
@@ -10,7 +10,7 @@ using Frosty.Sdk.Managers.Entries;
 using Frosty.Sdk.Managers.Loaders;
 using Frosty.Sdk.Managers.Patch;
 using Frosty.Sdk.Resources;
-using FileInfo = Frosty.Sdk.Managers.Infos.FileInfo;
+using Frosty.Sdk.Utils;
 
 namespace Frosty.Sdk.Managers;
 
@@ -19,7 +19,9 @@ namespace Frosty.Sdk.Managers;
 /// </summary>
 public static class AssetManager
 {
-    public static bool IsInitialized;
+    public static bool IsInitialized { get; private set; }
+    
+    public static ILogger? Logger { get; set; }
 
     private static readonly Dictionary<int, int> s_superBundlesNameHashHashMap = new();
     private static readonly List<SuperBundleEntry> s_superBundles = new();
@@ -29,17 +31,23 @@ public static class AssetManager
     
     private static readonly Dictionary<int, int> s_ebxNameHashHashMap = new();
     private static readonly Dictionary<Guid, int> s_ebxGuidHashMap = new();
-    private static readonly ObservableCollection<EbxAssetEntry> s_ebxAssetEntries = new();
+    private static readonly List<EbxAssetEntry> s_ebxAssetEntries = new();
     
     private static readonly Dictionary<int, int> s_resNameHashHashMap = new();
     private static readonly Dictionary<ulong, int> s_resRidHashMap = new();
-    private static readonly ObservableCollection<ResAssetEntry> s_resAssetEntries = new();
+    private static readonly List<ResAssetEntry> s_resAssetEntries = new();
     
     private static readonly Dictionary<Guid, int> s_chunkGuidHashMap = new();
-    private static readonly ObservableCollection<ChunkAssetEntry> s_chunkAssetEntries = new();
+    private static readonly List<ChunkAssetEntry> s_chunkAssetEntries = new();
 
-    private const ulong c_cacheMagic = 0x02005954534F5246; 
-    private const uint c_cacheVersion = 4;
+    /// <summary>
+    /// Cache Versions:
+    /// <para>1 - Initial Version</para>
+    /// <para>2 - Nothing changed in the format just bumped up that the cache gets regenerated, bc bundled chunks did not always had their logical offset/size stored</para>
+    /// <para>3 - Completely changed what needs to be stored</para>
+    /// </summary>
+    private const uint c_cacheVersion = 3;
+    private const ulong c_cacheMagic = 0x02005954534F5246;
 
     /// <summary>
     /// Parses the games SuperBundles and creates lookups for all Assets, Bundles and SuperBundles.
@@ -61,10 +69,35 @@ public static class AssetManager
         if (!ReadCache(out List<EbxAssetEntry> prePatchEbx, out List<ResAssetEntry> prePatchRes,
                 out List<ChunkAssetEntry> prePatchChunks))
         {
-            IAssetLoader assetLoader = GetAssetLoader(ProfilesLibrary.AssetLoader);
-            assetLoader.Load();
+            Stopwatch timer = new();
             
+            Logger?.Report("Sdk", "Loading FileInfos from catalogs");
+            
+            timer.Start();
+            ResourceManager.LoadInstallChunks();
+            timer.Stop();
+            
+            Logger?.Report("Sdk", $"Loaded FileInfos from catalogs in {timer.Elapsed.Seconds} seconds");
+            
+            IAssetLoader assetLoader = GetAssetLoader();
+            
+            Logger?.Report("Sdk", "Loading Assets from SuperBundles");
+            
+            timer.Restart();
+            assetLoader.Load();
+            timer.Stop();
+            
+            Logger?.Report("Sdk", $"Loaded Assets from SuperBundles in {timer.Elapsed.Seconds} seconds");
+            
+            ResourceManager.CLearInstallChunks();
+            
+            Logger?.Report("Sdk", "Indexing Ebx");
+            
+            timer.Restart();
             DoEbxIndexing();
+            timer.Stop();
+            
+            Logger?.Report("Sdk", $"Indexed ebx in {timer.Elapsed}");
             
             WriteCache();
 
@@ -153,6 +186,8 @@ public static class AssetManager
                 prePatchChunks.Clear();
             }
         }
+        
+        Logger?.Report("Sdk", "Finished initializing");
         
         IsInitialized = true;
         return true;
@@ -276,7 +311,7 @@ public static class AssetManager
 
     #endregion
 
-#endregion
+    #endregion
 
     #endregion
 
@@ -305,39 +340,47 @@ public static class AssetManager
 
     public static Stream GetAsset(AssetEntry entry)
     {
-        switch (entry.Location)
-        {
-            case AssetDataLocation.Cas:
-                return entry.BaseSha1 != Sha1.Zero ? ResourceManager.GetResourceData(entry.BaseSha1, entry.DeltaSha1) : ResourceManager.GetResourceData(entry.Sha1);
-            case AssetDataLocation.CasNonIndexed:
-                return ResourceManager.GetResourceData(entry.FileInfo);
-            default:
-                throw new Exception();
-        }
+        return Stream.Null;
     }
 
     public static Stream GetRawAsset(AssetEntry entry)
     {
-        switch (entry.Location)
-        {
-            case AssetDataLocation.Cas:
-                return entry.BaseSha1 != Sha1.Zero ? ResourceManager.GetRawResourceData(entry.BaseSha1, entry.DeltaSha1) : ResourceManager.GetResourceData(entry.Sha1);
-            case AssetDataLocation.CasNonIndexed:
-                return ResourceManager.GetRawResourceData(entry.FileInfo);
-            default:
-                throw new Exception();
-        }
+        return Stream.Null;
     }
 
     #endregion
-
-    public static IEnumerable<SuperBundleEntry> EnumerateSuperBundles() => s_superBundles;
     
-    public static IEnumerable<SuperBundleEntry> EnumerateSuperBundlesYield()
+    public static IEnumerable<SuperBundleEntry> EnumerateSuperBundles()
     {
         for (int i = 0; i < s_superBundles.Count; i++)
         {
             yield return s_superBundles[i];
+        }
+    }
+
+    public static IEnumerable<BundleEntry> EnumerateBundles(BundleType type = BundleType.None, int superBundleId = -1)
+    {
+        foreach (BundleEntry entry in s_bundles)
+        {
+            if (type != BundleType.None && entry.Type != type)
+            {
+                continue;
+            }
+
+            if (superBundleId != -1 && entry.SuperBundleId != superBundleId)
+            {
+                continue;
+            }
+            
+            yield return entry;
+        }
+    }
+    
+    public static IEnumerable<EbxAssetEntry> EnumerateEbxAssetEntries()
+    {
+        foreach (EbxAssetEntry entry in s_ebxAssetEntries)
+        {
+            yield return entry;
         }
     }
 
@@ -359,64 +402,7 @@ public static class AssetManager
         return id;
     }
 
-    /// <summary>
-    /// Processes Assets from Bundle.
-    /// </summary>
-    /// <param name="bundle">The Bundle to process.</param>
-    /// <param name="superBundleId">The Id of the SuperBundle the Bundle is in.</param>
-    /// <param name="bundleName">The name of the Bundle.</param>
-    internal static void ProcessBundle(DbObject bundle, int superBundleId, string bundleName)
-    {
-        int bundleId = AddBundle(bundleName, superBundleId);
-        if (bundle.ContainsKey("ebx"))
-        {
-            AddEbx(bundle["ebx"].As<DbObject>(), bundleId);
-        }
-        if (bundle.ContainsKey("res"))
-        {
-            AddRes(bundle["res"].As<DbObject>(), bundleId);
-        }
-        if (bundle.ContainsKey("chunks"))
-        {
-            AddChunk(bundle["chunks"].As<DbObject>(), bundleId);
-        }
-    }
-
-    /// <summary>
-    /// Adds Chunk contained in the toc of a SuperBundle to the AssetManager.
-    /// This will override any location of where an already processed chunk was stored,
-    /// so that TextureChunks which are stored in Bundles have the correct data.
-    /// </summary>
-    /// <param name="entry">The <see cref="ChunkAssetEntry"/> of the Chunk.</param>
-    internal static void AddSuperBundleChunk(ChunkAssetEntry entry)
-    {
-        if (s_chunkGuidHashMap.ContainsKey(entry.Id))
-        {
-            ChunkAssetEntry existing = s_chunkAssetEntries[s_chunkGuidHashMap[entry.Id]];
-            
-            // add existing Bundles
-            entry.Bundles.UnionWith(existing.Bundles);
-
-            // add logicalOffset/Size, since those are only stored in bundles
-            entry.LogicalOffset = existing.LogicalOffset;
-            entry.LogicalSize = existing.LogicalSize;
-
-            // merge SuperBundles
-            foreach (int existingSuperBundle in existing.SuperBundles.Where(existingSuperBundle => !entry.SuperBundles.Contains(existingSuperBundle)))
-            {
-                entry.SuperBundles.Add(existingSuperBundle);
-            }
-
-            s_chunkAssetEntries[s_chunkGuidHashMap[entry.Id]] = entry;
-        }
-        else
-        {
-            s_chunkGuidHashMap.Add(entry.Id, s_chunkAssetEntries.Count);
-            s_chunkAssetEntries.Add(entry);
-        }
-    }
-
-    private static int AddBundle(string name, int superBundleId)
+    internal static int AddBundle(string name, int superBundleId)
     {
         int hash = Utils.Utils.HashString(name, true);
         if (s_bundlesNameHashHashMap.TryGetValue(hash, out int bundleId))
@@ -428,17 +414,17 @@ public static class AssetManager
         return s_bundles.Count - 1;
     }
 
-    private static IAssetLoader GetAssetLoader(string name)
+    private static IAssetLoader GetAssetLoader()
     {
-        switch (name)
+        switch (FileSystemManager.BundleFormat)
         {
-            case "Standard":
-                return new StandardAssetLoader();
-            case "Cas":
-                return new CasAssetLoader();
-            case "Fifa":
-                return new FifaAssetLoader();
-            case "Manifest":
+            case BundleFormat.DbObject:
+                return new DbObjectAssetLoader();
+            case BundleFormat.Manifest2019:
+                return new Manifest2019AssetLoader();
+            case BundleFormat.Kelvin:
+                return new KelvinAssetLoader();
+            case BundleFormat.SuperBundleManifest:
                 return new ManifestAssetLoader();
             default:
                 throw new ArgumentException("Not valid AssetLoader.");
@@ -447,138 +433,106 @@ public static class AssetManager
 
     #region -- AddingAssets --
 
-    /// <summary>
-    /// Adds all ebx of a bundle to the AssetManager.
-    /// </summary>
-    /// <param name="ebxList">The <see cref="DbObject"/> list of the ebx from the bundle.</param>
-    /// <param name="bundleId">The id of the bundle.</param>
-    private static void AddEbx(DbObject ebxList, int bundleId)
+    internal static void AddEbx(EbxAssetEntry entry, int bundleId)
     {
-        foreach (DbObject ebx in ebxList)
+        int nameHash = Utils.Utils.HashString(entry.Name, true);
+        if (s_ebxNameHashHashMap.TryGetValue(nameHash, out int index))
         {
-            string name = ebx["name"].As<string>();
-            int nameHash = Utils.Utils.HashString(name, true);
-            EbxAssetEntry entry;
-            if (!s_ebxNameHashHashMap.ContainsKey(nameHash))
-            {
-                entry = new EbxAssetEntry(name, ebx["sha1"].As<Sha1>(), ebx["size"].As<long>(),
-                    ebx["originalSize"].As<long>());
-                
-                if (ebx.ContainsKey("casPatchType") && ebx["casPatchType"].As<int>() == 2)
-                {
-                    entry.BaseSha1 = ebx["baseSha1"].As<Sha1>();
-                    entry.DeltaSha1 = ebx["deltaSha1"].As<Sha1>();
-                }
+            EbxAssetEntry existing = s_ebxAssetEntries[index];
+            
+            existing.FileInfos.UnionWith(entry.FileInfos);
 
-                if (ebx.ContainsKey("path"))
-                {
-                    entry.Location = AssetDataLocation.CasNonIndexed;
-                    entry.FileInfo = new FileInfo(ebx["path"].As<string>(), ebx["offset"].As<long>(),
-                        ebx["size"].As<long>());
-                }
-                
-                s_ebxNameHashHashMap.Add(nameHash, s_ebxAssetEntries.Count);
-                s_ebxAssetEntries.Add(entry);
-            }
-            else
-            {
-                entry = s_ebxAssetEntries[s_ebxNameHashHashMap[nameHash]];
-            }
+            existing.Bundles.Add(bundleId);
+        }
+        else
+        {
+            entry.Bundles.Add(bundleId);
+            s_ebxNameHashHashMap.Add(nameHash, s_ebxAssetEntries.Count);
+            s_ebxAssetEntries.Add(entry);
+        }
+    }
 
-            // TODO: figure out how exactly to handle split super bundles since they seem to contain the same assets
-            if (!entry.Bundles.Contains(bundleId))
+    internal static void AddRes(ResAssetEntry entry, int bundleId)
+    {
+        int nameHash = Utils.Utils.HashString(entry.Name, true);
+        if (s_resNameHashHashMap.TryGetValue(nameHash, out int index))
+        {
+            ResAssetEntry existing = s_resAssetEntries[index];
+            
+            existing.FileInfos.UnionWith(entry.FileInfos);
+
+            existing.Bundles.Add(bundleId);
+        }
+        else
+        {
+            entry.Bundles.Add(bundleId);
+            if (entry.ResRid != 0)
             {
-                entry.Bundles.Add(bundleId);
+                s_resRidHashMap.Add(entry.ResRid, s_resAssetEntries.Count);
             }
+            s_resNameHashHashMap.Add(nameHash, s_resAssetEntries.Count);
+            s_resAssetEntries.Add(entry);
+        }
+    }
+
+    internal static void AddChunk(ChunkAssetEntry entry, int bundleId)
+    {
+        if (s_chunkGuidHashMap.TryGetValue(entry.Id, out int index))
+        {
+            ChunkAssetEntry existing = s_chunkAssetEntries[index];
+            
+            existing.FileInfos.UnionWith(entry.FileInfos);
+
+            existing.Bundles.Add(bundleId);
+            
+            if (existing.LogicalSize == 0)
+            {
+                // this chunk was first added as a superbundle chunk, so add logical offset/size and sha1
+                existing.Sha1 = existing.Sha1;
+                existing.LogicalOffset = existing.LogicalOffset;
+                existing.LogicalSize = existing.LogicalSize;
+                existing.OriginalSize = entry.OriginalSize;
+            }
+        }
+        else
+        {
+            entry.Bundles.Add(bundleId);
+            s_chunkGuidHashMap.Add(entry.Id, s_chunkAssetEntries.Count);
+            s_chunkAssetEntries.Add(entry);
         }
     }
 
     /// <summary>
-    /// Adds all res of a bundle to the AssetManager.
+    /// Adds Chunk contained in the toc of a SuperBundle to the AssetManager.
+    /// This will override any location of where an already processed chunk was stored,
+    /// so that TextureChunks which are stored in Bundles have the correct data.
     /// </summary>
-    /// <param name="resList">The <see cref="DbObject"/> list of the res from the bundle.</param>
-    /// <param name="bundleId">The id of the bundle.</param>
-    private static void AddRes(DbObject resList, int bundleId)
+    /// <param name="entry">The <see cref="ChunkAssetEntry"/> of the Chunk.</param>
+    internal static void AddSuperBundleChunk(ChunkAssetEntry entry)
     {
-        foreach (DbObject res in resList)
+        if (s_chunkGuidHashMap.TryGetValue(entry.Id, out int index))
         {
-            string name = (string)res["name"];
-            int nameHash = Utils.Utils.HashString(name, true);
-            ResAssetEntry entry;
-            if (!s_resNameHashHashMap.ContainsKey(nameHash))
-            {
-                entry = new ResAssetEntry(name, res["sha1"].As<Sha1>(), res["size"].As<long>(),
-                    res["originalSize"].As<long>(), res["resRid"].As<ulong>(), res["resType"].As<uint>(),
-                    res["resMeta"].As<byte[]>());
-                
-                if (res.ContainsKey("casPatchType") && res["casPatchType"].As<int>() == 2)
-                {
-                    entry.BaseSha1 = res["baseSha1"].As<Sha1>();
-                    entry.DeltaSha1 = res["deltaSha1"].As<Sha1>();
-                }
-                
-                if (res.ContainsKey("path"))
-                {
-                    entry.Location = AssetDataLocation.CasNonIndexed;
-                    entry.FileInfo = new FileInfo(res["path"].As<string>(), res["offset"].As<long>(),
-                        res["size"].As<long>());
-                }
-                
-                if (entry.ResRid != 0)
-                {
-                    s_resRidHashMap.Add(entry.ResRid, s_resAssetEntries.Count);
-                }
-                s_resNameHashHashMap.Add(nameHash, s_resAssetEntries.Count);
-                s_resAssetEntries.Add(entry);
-            }
-            else
-            {
-                entry = s_resAssetEntries[s_resNameHashHashMap[nameHash]];
-            }
+            ChunkAssetEntry existing = s_chunkAssetEntries[index];
             
-            if (!entry.Bundles.Contains(bundleId))
-            {
-                entry.Bundles.Add(bundleId);
-            }
-        }
-    }
+            // add existing Bundles
+            entry.Bundles.UnionWith(existing.Bundles);
+            
+            entry.FileInfos.UnionWith(existing.FileInfos);
 
-    /// <summary>
-    /// Adds all chunks of a bundle to the AssetManager.
-    /// </summary>
-    /// <param name="chunkList">The <see cref="DbObject"/> list of the chunks from the bundle.</param>
-    /// <param name="bundleId">The id of the bundle.</param>
-    private static void AddChunk(DbObject chunkList, int bundleId)
-    {
-        foreach (DbObject chunk in chunkList)
+            // add logicalOffset/Size, since those are only stored in bundles
+            entry.LogicalOffset = existing.LogicalOffset;
+            entry.LogicalSize = existing.LogicalSize;
+            entry.OriginalSize = existing.OriginalSize;
+
+            // merge SuperBundles
+            entry.SuperBundles.UnionWith(existing.SuperBundles);
+
+            s_chunkAssetEntries[s_chunkGuidHashMap[entry.Id]] = entry;
+        }
+        else
         {
-            Guid chunkId = chunk["id"].As<Guid>();
-            ChunkAssetEntry entry;
-            if (!s_chunkGuidHashMap.ContainsKey(chunkId))
-            {
-                // some layouts store rangeStart/End or bundledSize, but we ignore those since we can recalculate them from the logicalOffset/Size
-                entry = new ChunkAssetEntry(chunkId, chunk["sha1"].As<Sha1>(), chunk["size"].As<long>(),
-                    chunk["logicalOffset"].As<uint>(), chunk["logicalSize"].As<uint>());
-                
-                if (chunk.ContainsKey("path"))
-                {
-                    entry.Location = AssetDataLocation.CasNonIndexed;
-                    entry.FileInfo = new FileInfo(chunk["path"].As<string>(), chunk["offset"].As<long>(),
-                        chunk["size"].As<long>());
-                }
-                
-                s_chunkGuidHashMap.Add(chunkId, s_chunkAssetEntries.Count);
-                s_chunkAssetEntries.Add(entry);
-            }
-            else
-            {
-                entry = s_chunkAssetEntries[s_chunkGuidHashMap[chunkId]];
-            }
-            
-            if (!entry.Bundles.Contains(bundleId))
-            {
-                entry.Bundles.Add(bundleId);
-            }
+            s_chunkGuidHashMap.Add(entry.Id, s_chunkAssetEntries.Count);
+            s_chunkAssetEntries.Add(entry);
         }
     }
 
@@ -588,6 +542,9 @@ public static class AssetManager
 
     private static void DoEbxIndexing()
     {
+        // TODO: implement GetAsset()
+        return;
+        
         if (s_ebxGuidHashMap.Count > 0)
         {
             return;
@@ -621,7 +578,7 @@ public static class AssetManager
                 s_ebxGuidHashMap.Add(entry.Guid, i);
                 
                 // Manifest AssetLoader has stripped the bundle names, so we need to figure them out
-                if (ProfilesLibrary.AssetLoader.Equals("Manifest"))
+                if (FileSystemManager.BundleFormat == BundleFormat.SuperBundleManifest)
                 {
                     // need to work out bundle here (as bundles are hashed names only)
                     if (TypeLibrary.IsSubClassOf(entry.Type, "BlueprintBundle") ||
@@ -715,29 +672,23 @@ public static class AssetManager
                 }
             }
 
+            Logger?.Report("Sdk", "Loading ebx from cache");
             int ebxCount = stream.ReadInt32();
             for (int i = 0; i < ebxCount; i++)
             {
+                Logger?.Report(i / (double)ebxCount);
                 string name = stream.ReadNullTerminatedString();
 
                 EbxAssetEntry entry = new(name, stream.ReadSha1(), stream.ReadInt64(), stream.ReadInt64())
                 {
                     Guid = stream.ReadGuid(),
-                    Type = stream.ReadNullTerminatedString(),
-                    Location = (AssetDataLocation)stream.ReadByte()
+                    Type = stream.ReadNullTerminatedString()
                 };
 
-                switch (entry.Location)
+                int numFileInfos = stream.ReadInt32();
+                for (int j = 0; j < numFileInfos; j++)
                 {
-                    case AssetDataLocation.Cas:
-                        entry.BaseSha1= stream.ReadSha1();
-                        entry.DeltaSha1= stream.ReadSha1();
-                        break;
-                    case AssetDataLocation.CasNonIndexed:
-                        entry.FileInfo.Path = stream.ReadNullTerminatedString();
-                        entry.FileInfo.Offset = stream.ReadInt64();
-                        entry.FileInfo.Size = stream.ReadInt64();
-                        break;
+                    entry.FileInfos.Add(IFileInfo.Deserialize(stream));
                 }
 
                 int numBundles = stream.ReadInt32();
@@ -752,34 +703,30 @@ public static class AssetManager
                 }
                 else
                 {
-                    s_ebxGuidHashMap.Add(entry.Guid, s_ebxAssetEntries.Count);
+                    // TODO: remove this when the ebx indexing is working
+                    if (entry.Guid != Guid.Empty)
+                    {
+                        s_ebxGuidHashMap.Add(entry.Guid, s_ebxAssetEntries.Count);
+                    }
                     s_ebxNameHashHashMap.Add(Utils.Utils.HashString(name, true), s_ebxAssetEntries.Count);
                     s_ebxAssetEntries.Add(entry);
                 }
             }
-            
+
+            Logger?.Report("Sdk", "Loading res from cache");
             int resCount = stream.ReadInt32();
             for (int i = 0; i < resCount; i++)
             {
+                Logger?.Report(i / (double)resCount);
                 string name = stream.ReadNullTerminatedString();
 
                 ResAssetEntry entry = new(name, stream.ReadSha1(), stream.ReadInt64(), stream.ReadInt64(),
-                    stream.ReadUInt64(), stream.ReadUInt32(), stream.ReadBytes(stream.ReadInt32()))
-                {
-                    Location = (AssetDataLocation)stream.ReadByte()
-                };
+                    stream.ReadUInt64(), stream.ReadUInt32(), stream.ReadBytes(stream.ReadInt32()));
 
-                switch (entry.Location)
+                int numFileInfos = stream.ReadInt32();
+                for (int j = 0; j < numFileInfos; j++)
                 {
-                    case AssetDataLocation.Cas:
-                        entry.BaseSha1= stream.ReadSha1();
-                        entry.DeltaSha1= stream.ReadSha1();
-                        break;
-                    case AssetDataLocation.CasNonIndexed:
-                        entry.FileInfo.Path = stream.ReadNullTerminatedString();
-                        entry.FileInfo.Offset = stream.ReadInt64();
-                        entry.FileInfo.Size = stream.ReadInt64();
-                        break;
+                    entry.FileInfos.Add(IFileInfo.Deserialize(stream));
                 }
                 
                 int numBundles = stream.ReadInt32();
@@ -803,26 +750,18 @@ public static class AssetManager
                 }
             }
             
+            Logger?.Report("Sdk", "Loading chunks from cache");
             int chunkCount = stream.ReadInt32();
             for (int i = 0; i < chunkCount; i++)
             {
+                Logger?.Report(i / (double)chunkCount);
                 ChunkAssetEntry entry = new(stream.ReadGuid(), stream.ReadSha1(), stream.ReadInt64(),
-                    stream.ReadUInt32(), stream.ReadUInt32())
-                {
-                    Location = (AssetDataLocation)stream.ReadByte()
-                };
+                    stream.ReadUInt32(), stream.ReadUInt32());
 
-                switch (entry.Location)
+                int numFileInfos = stream.ReadInt32();
+                for (int j = 0; j < numFileInfos; j++)
                 {
-                    case AssetDataLocation.Cas:
-                        entry.BaseSha1= stream.ReadSha1();
-                        entry.DeltaSha1= stream.ReadSha1();
-                        break;
-                    case AssetDataLocation.CasNonIndexed:
-                        entry.FileInfo.Path = stream.ReadNullTerminatedString();
-                        entry.FileInfo.Offset = stream.ReadInt64();
-                        entry.FileInfo.Size = stream.ReadInt64();
-                        break;
+                    entry.FileInfos.Add(IFileInfo.Deserialize(stream));
                 }
                 
                 int numSuperBundles = stream.ReadInt32();
@@ -854,7 +793,7 @@ public static class AssetManager
 
     private static void WriteCache()
     {
-        System.IO.FileInfo fi = new($"{FileSystemManager.CacheName}.cache");
+        FileInfo fi = new($"{FileSystemManager.CacheName}.cache");
         Directory.CreateDirectory(fi.DirectoryName!);
 
         using (DataStream stream = new(new FileStream(fi.FullName, FileMode.Create, FileAccess.Write)))
@@ -889,19 +828,11 @@ public static class AssetManager
 
                 stream.WriteGuid(entry.Guid);
                 stream.WriteNullTerminatedString(entry.Type);
-                stream.WriteByte((byte)entry.Location);
-
-                switch (entry.Location)
+                
+                stream.WriteInt32(entry.FileInfos.Count);
+                foreach (IFileInfo fileInfo in entry.FileInfos)
                 {
-                    case AssetDataLocation.Cas:
-                        stream.WriteSha1(entry.BaseSha1);
-                        stream.WriteSha1(entry.DeltaSha1);
-                        break;
-                    case AssetDataLocation.CasNonIndexed:
-                        stream.WriteNullTerminatedString(entry.FileInfo.Path);
-                        stream.WriteInt64(entry.FileInfo.Offset);
-                        stream.WriteInt64(entry.FileInfo.Size);
-                        break;
+                    IFileInfo.Serialize(stream, fileInfo);
                 }
                 
                 stream.WriteInt32(entry.Bundles.Count);
@@ -924,20 +855,11 @@ public static class AssetManager
                 stream.WriteUInt32(entry.ResType);
                 stream.WriteInt32(entry.ResMeta.Length);
                 stream.Write(entry.ResMeta, 0, entry.ResMeta.Length);
-
-                stream.WriteByte((byte)entry.Location);
-
-                switch (entry.Location)
+                
+                stream.WriteInt32(entry.FileInfos.Count);
+                foreach (IFileInfo fileInfo in entry.FileInfos)
                 {
-                    case AssetDataLocation.Cas:
-                        stream.WriteSha1(entry.BaseSha1);
-                        stream.WriteSha1(entry.DeltaSha1);
-                        break;
-                    case AssetDataLocation.CasNonIndexed:
-                        stream.WriteNullTerminatedString(entry.FileInfo.Path);
-                        stream.WriteInt64(entry.FileInfo.Offset);
-                        stream.WriteInt64(entry.FileInfo.Size);
-                        break;
+                    IFileInfo.Serialize(stream, fileInfo);
                 }
                 
                 stream.WriteInt32(entry.Bundles.Count);
@@ -957,20 +879,11 @@ public static class AssetManager
                 
                 stream.WriteUInt32(entry.LogicalOffset);
                 stream.WriteUInt32(entry.LogicalSize);
-
-                stream.WriteByte((byte)entry.Location);
-
-                switch (entry.Location)
+                
+                stream.WriteInt32(entry.FileInfos.Count);
+                foreach (IFileInfo fileInfo in entry.FileInfos)
                 {
-                    case AssetDataLocation.Cas:
-                        stream.WriteSha1(entry.BaseSha1);
-                        stream.WriteSha1(entry.DeltaSha1);
-                        break;
-                    case AssetDataLocation.CasNonIndexed:
-                        stream.WriteNullTerminatedString(entry.FileInfo.Path);
-                        stream.WriteInt64(entry.FileInfo.Offset);
-                        stream.WriteInt64(entry.FileInfo.Size);
-                        break;
+                    IFileInfo.Serialize(stream, fileInfo);
                 }
                 
                 stream.WriteInt32(entry.SuperBundles.Count);

@@ -1,10 +1,11 @@
 ﻿{
   "Name": "MassEffectAndromeda",
   "DisplayName": "Mass Effect: Andromeda",
-  "CacheName": "masseffect",
-  "Deobfuscator": "Signature",
-  "AssetLoader": "Standard",
+  "InternalName": "masseffect",
+  "TypeInfoSignature" : "",
+  "HasStrippedTypeNames": false,
   "DataVersion": 20170320,
+  "FrostbiteVersion": "2015.4.6",
   "Sources": [
     {
       "Path": "Patch",
@@ -15,8 +16,6 @@
       "SubDirs": false
     }
   ],
-  "SdkFileName": "MassEffectSDK",
-  "BannerPath": "mea",
   "EbxVersion": 2,
   "RequiresKey": false,
   "MustAddChunks": false,

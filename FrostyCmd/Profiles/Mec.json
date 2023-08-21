@@ -1,10 +1,12 @@
 ﻿{
   "Name": "MirrorsEdgeCatalyst",
   "DisplayName": "Mirror's Edge™ Catalyst",
-  "CacheName": "mirrorsedge",
-  "Deobfuscator": "Signature",
-  "AssetLoader": "Standard",
+  "InternalName": "mirrorsedge",
+  "TypeInfoSignature" : "",
+  "HasStrippedTypeNames": false,
   "DataVersion": 20160606,
+  "_comment": "Actual version 2014.4.11, it seems like for some reason they forgot to update it, since its different from other games using that version.",
+  "FrostbiteVersion": "2014.4.17",
   "Sources": [
     {
       "Path": "Patch",
@@ -15,8 +17,6 @@
       "SubDirs": false
     }
   ],
-  "SdkFileName": "MirrorsEdgeSDK",
-  "BannerPath": "mec",
   "EbxVersion": 2,
   "RequiresKey": false,
   "MustAddChunks": false,

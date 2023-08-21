@@ -1,10 +1,12 @@
 ﻿{
   "Name": "starwarsbattlefrontii",
   "DisplayName": "STAR WARS™ Battlefront™ II",
-  "CacheName": "starwarsii",
-  "Deobfuscator": "Signature",
-  "AssetLoader": "Manifest",
+  "InternalName": "starwarsii",
+  "TypeInfoSignature" : "",
+  "HasStrippedTypeNames": false,
   "DataVersion": 20171116,
+  "_comment": "Actual version 2019-PR5, but the engine version is based on 2016.4.4",
+  "FrostbiteVersion": "2016.4.4",
   "Sources": [
     {
       "Path": "Patch",
@@ -15,8 +17,6 @@
       "SubDirs": false
     }
   ],
-  "SdkFileName": "StarWarsIISDK",
-  "BannerPath": "SWBF2",
   "EbxVersion": 4,
   "RequiresKey": false,
   "MustAddChunks": false,

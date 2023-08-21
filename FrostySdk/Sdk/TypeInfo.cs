@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Text;
 using Frosty.Sdk.IO;
 using Frosty.Sdk.Profiles;
@@ -14,66 +13,43 @@ internal class TypeInfo
     {
         get
         {
-            switch ((ProfileVersion)ProfilesLibrary.DataVersion)
+            if (ProfilesLibrary.FrostbiteVersion <= "2014.1")
             {
-                // Prev TypeInfo
-                case ProfileVersion.Fifa21:
-                case ProfileVersion.Madden22:
-                case ProfileVersion.Fifa22:
-                case ProfileVersion.Battlefield2042:
-                case ProfileVersion.Madden23:
-                case ProfileVersion.Fifa23:
-                case ProfileVersion.NeedForSpeedUnbound:
-                case ProfileVersion.DeadSpace:
-                    return 6;
-
-                // Guid and NameHash in TypeInfoData
-                case ProfileVersion.Fifa19:
-                case ProfileVersion.Anthem:
-                case ProfileVersion.Madden20:
-                case ProfileVersion.Fifa20:
-                case ProfileVersion.PlantsVsZombiesBattleforNeighborville:
-                case ProfileVersion.NeedForSpeedHeat:
-                    return 5;
-
-                // Guid in TypeInfo
-                case ProfileVersion.Fifa18:
-                case ProfileVersion.NeedForSpeedPayback:
-                case ProfileVersion.StarWarsBattlefrontII:
-                case ProfileVersion.Battlefield5:
-                case ProfileVersion.Madden19:
-                case ProfileVersion.StarWarsSquadrons:
-                    return 4;
-
-                // ArrayInfo
-                case ProfileVersion.Fifa17:
-                case ProfileVersion.MassEffectAndromeda:
-                    return 3;
-
-                // ushort FieldCount
-                case ProfileVersion.Battlefield4: // would expect version 1 ???
-                case ProfileVersion.Battlefield1:
-                case ProfileVersion.StarWarsBattlefront:
-                case ProfileVersion.MirrorsEdgeCatalyst:
-                case ProfileVersion.NeedForSpeed:
-                case ProfileVersion.NeedForSpeedEdge:
-                case ProfileVersion.PlantsVsZombiesGardenWarfare2:
-                    return 2;
-
-                case ProfileVersion.NeedForSpeedRivals:
-                case ProfileVersion.DragonAgeInquisition:
-                case ProfileVersion.PlantsVsZombiesGardenWarfare:
-                    return 1;
-                
-                default:
-                    return 0;
+                // 2013.2, 2014.1
+                return 1;
             }
+            if (ProfilesLibrary.FrostbiteVersion <= "2014.4.17")
+            {
+                // ushort FieldCount
+                // 2014.4.11, 2014.4.17
+                return 2;
+            }
+            if (ProfilesLibrary.FrostbiteVersion <= "2015.4.6")
+            {
+                // ArrayInfo in TypeInfoData
+                // 2015.4, 2015.4.6
+                return 3;
+            }
+            if (ProfilesLibrary.FrostbiteVersion <= "2016.4.7")
+            {
+                // Signature Guid in TypeInfo
+                // 2016.4.1, 2016.4.4, 2016.4.7, (2018.0 (BfV), 2019-PR5 (SWBfII) -> changed to 2016.4.4)
+                return 4;
+            }
+            if (ProfilesLibrary.FrostbiteVersion <= "2018.2")
+            {
+                // Guid and NameHash in TypeInfoData
+                // 2017.3, 2017.7, 2018.0, 2018.2
+                return 5;
+            }
+
+            // Prev TypeInfo and Signature as uint in TypeInfoData
+            // 2019.0, 2020.0, 2021.1.1, 2021.2.0, 2021.2.3
+            return 6;
         }
     }
 
     public static readonly Dictionary<long, TypeInfo> TypeInfoMapping = new();
-
-    public static bool HasNames => !ProfilesLibrary.IsLoaded(ProfileVersion.Anthem, ProfileVersion.Battlefield2042);
 
     protected TypeInfoData m_data;
     protected long p_prev;
@@ -150,10 +126,10 @@ internal class TypeInfo
         if (Version == 4)
         {
             m_data.SetGuid(reader.ReadGuid());
-            reader.ReadGuid();
         }
-        if (Version == 5)
+        if (Version == 4 || Version == 5)
         {
+            // signature
             reader.ReadGuid();
         }
 

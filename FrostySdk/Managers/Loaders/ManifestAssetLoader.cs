@@ -1,12 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
+using Frosty.Sdk.DbObjectElements;
 using Frosty.Sdk.Interfaces;
 using Frosty.Sdk.IO;
 using Frosty.Sdk.Managers.Entries;
 using Frosty.Sdk.Managers.Infos;
-using FileInfo = Frosty.Sdk.Managers.Infos.FileInfo;
+using Frosty.Sdk.Managers.Infos.FileInfos;
 
 namespace Frosty.Sdk.Managers.Loaders;
 
@@ -17,30 +16,29 @@ public class ManifestAssetLoader : IAssetLoader
         // This format has all SuperBundles stripped
         // all of the bundles and chunks of all SuperBundles are put into the manifest
         // afaik u cant reconstruct the SuperBundles, so this might make things a bit ugly
+        // They also seem to have catalog files which entries are not used, but they still make a sanity check for the offsets and indices in the file
         
         AssetManager.AddSuperBundle("Manifest");
         
-        DbObject manifest = FileSystemManager.Manifest!;
-
-        CasMergedFileInfo file = manifest["file"].As<uint>();
-
+        DbObjectDict manifest = FileSystemManager.Manifest!;
+        
+        CasFileIdentifier file = CasFileIdentifier.FromFileIdentifierV2(manifest.AsUInt("file"));
+        
         string path = FileSystemManager.GetFilePath(file);
-
-        using (DataStream stream = new(new FileStream(FileSystemManager.ResolvePath(path), FileMode.Open, FileAccess.Read)))
+        
+        using (BlockStream stream = BlockStream.FromFile(FileSystemManager.ResolvePath(path), manifest.AsUInt("offset"), manifest.AsInt("size")))
         {
-            stream.Position = manifest["offset"].As<long>();
-
             uint resourceInfoCount = stream.ReadUInt32();
             uint bundleCount = stream.ReadUInt32();
             uint chunkCount = stream.ReadUInt32();
 
-            CasMergedResourceInfo[] resourceInfos = new CasMergedResourceInfo[resourceInfoCount];
-
+            (CasFileIdentifier, uint, long)[] files = new (CasFileIdentifier, uint, long)[resourceInfoCount];
+        
             // resource infos
             for (int i = 0; i < resourceInfoCount; i++)
             {
-                resourceInfos[i] = new CasMergedResourceInfo(stream.ReadUInt32(), stream.ReadUInt32(),
-                    stream.ReadInt64());
+                files[i] = (CasFileIdentifier.FromFileIdentifierV2(stream.ReadUInt32()), stream.ReadUInt32(),
+                    (uint)stream.ReadInt64());
             }
             
             // bundles
@@ -49,40 +47,17 @@ public class ManifestAssetLoader : IAssetLoader
                 int nameHash = stream.ReadInt32();
                 int startIndex = stream.ReadInt32();
                 int resourceCount = stream.ReadInt32();
-
+        
                 // unknown, always 0
                 stream.ReadInt32();
                 stream.ReadInt32();
-
-                // first info is always the binary bundle
-                CasMergedResourceInfo bundleInfo = resourceInfos[startIndex];
-
-                DbObject bundle;
                 
-                string bundlePath = FileSystemManager.GetFilePath(bundleInfo.CasMergedFileInfo);
-                using (DataStream casStream = new(new FileStream(FileSystemManager.ResolvePath(bundlePath), FileMode.Open, FileAccess.Read)))
+                (CasFileIdentifier, uint, long) resourceInfo = files[startIndex];
+                BinaryBundle bundle;
+                using (BlockStream bundleStream = BlockStream.FromFile(FileSystemManager.ResolvePath(
+                           FileSystemManager.GetFilePath(resourceInfo.Item1)), resourceInfo.Item2, (int)resourceInfo.Item3))
                 {
-                    casStream.Position = bundleInfo.Offset;
-                    bundle = BinaryBundle.Deserialize(casStream);
-                    
-                    // TODO: could theoretically also contain some more data if i understand these resource infos correctly
-                    Debug.Assert(casStream.Position == bundleInfo.Offset + bundleInfo.Size);
-                }
-
-                // TODO: maybe parse merged resource infos, since the game uses those and not the catalog lookups
-                foreach (DbObject ebx in bundle["ebx"].As<DbObject>())
-                {
-                    ebx.AddValue("size", -1);
-                }
-                
-                foreach (DbObject res in bundle["res"].As<DbObject>())
-                {
-                    res.AddValue("size", -1);
-                }
-                
-                foreach (DbObject chunk in bundle["chunks"].As<DbObject>())
-                {
-                    chunk.AddValue("size", -1);
+                     bundle = BinaryBundle.Deserialize(bundleStream);
                 }
                 
                 if (!ProfilesLibrary.SharedBundles.TryGetValue(nameHash, out string? name))
@@ -90,58 +65,56 @@ public class ManifestAssetLoader : IAssetLoader
                     // we get the name while processing the ebx, since blueprint/sublevel bundles always have an ebx asset with the same name
                     name = nameHash.ToString("x8");
                 }
-                AssetManager.ProcessBundle(bundle, 0, name);
+            
+                int bundleId = AssetManager.AddBundle(name, 0);
+
+                foreach (EbxAssetEntry ebx in bundle.EbxList)
+                {
+                    IEnumerable<IFileInfo>? fileInfos = ResourceManager.GetFileInfos(ebx.Sha1);
+                    if (fileInfos is not null)
+                    {
+                        ebx.FileInfos.UnionWith(fileInfos);
+                    }
+                    
+                    AssetManager.AddEbx(ebx, bundleId);
+                }
+
+                foreach (ResAssetEntry res in bundle.ResList)
+                {
+                    IEnumerable<IFileInfo>? fileInfos = ResourceManager.GetFileInfos(res.Sha1);
+                    if (fileInfos is not null)
+                    {
+                        res.FileInfos.UnionWith(fileInfos);
+                    }
+
+                    AssetManager.AddRes(res, bundleId);
+                }
+
+                foreach (ChunkAssetEntry chunk in bundle.ChunkList)
+                {
+                    IEnumerable<IFileInfo>? fileInfos = ResourceManager.GetFileInfos(chunk.Sha1);
+                    if (fileInfos is not null)
+                    {
+                        chunk.FileInfos.UnionWith(fileInfos);
+                    }
+
+                    AssetManager.AddChunk(chunk, bundleId);
+                }
             }
             
             // chunks
             for (int i = 0; i < chunkCount; i++)
             {
                 Guid chunkId = stream.ReadGuid();
-                CasMergedResourceInfo resourceInfo = resourceInfos[stream.ReadInt32()];
+                (CasFileIdentifier, uint, long) resourceInfo = files[stream.ReadInt32()];
 
-                ChunkAssetEntry entry = new(chunkId, Sha1.Zero, resourceInfo.Size, 0, 0, 0)
-                {
-                    Location = AssetDataLocation.CasNonIndexed,
-                    FileInfo = new FileInfo(FileSystemManager.ResolvePath(FileSystemManager.GetFilePath(resourceInfo.CasMergedFileInfo)), resourceInfo.Offset, resourceInfo.Size)
-                };
+                ChunkAssetEntry entry = new(chunkId, Sha1.Zero, resourceInfo.Item3, 0, 0, 0);
+
+                entry.FileInfos.Add(
+                    new CasFileInfo(resourceInfo.Item1, resourceInfo.Item2, (uint)resourceInfo.Item3, 0));
 
                 AssetManager.AddSuperBundleChunk(entry);
             }
         }
-    }
-    
-    private long ReadCas(DataStream stream, int originalSize)
-    {
-        long size = 0;
-        while (originalSize > 0)
-        {
-            int decompressedSize = stream.ReadInt32(Endian.Big);
-            ushort compressionType = stream.ReadUInt16();
-            int bufferSize = stream.ReadUInt16(Endian.Big);
-
-            int flags = ((compressionType & 0xFF00) >> 8);
-
-            if ((flags & 0x0F) != 0)
-            {
-                bufferSize = ((flags & 0x0F) << 0x10) + bufferSize;
-            }
-
-            if ((decompressedSize & 0xFF000000) != 0)
-            {
-                decompressedSize &= 0x00FFFFFF;
-            }
-
-            originalSize -= decompressedSize;
-
-            compressionType = (ushort)(compressionType & 0x7F);
-            if (compressionType == 0x00)
-            {
-                bufferSize = decompressedSize;
-            }
-
-            size += bufferSize + 8;
-            stream.Position += bufferSize;
-        }
-        return size;
     }
 }

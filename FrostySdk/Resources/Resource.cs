@@ -1,5 +1,4 @@
 ﻿using Frosty.Sdk.IO;
-using Frosty.Sdk.IO.Ebx;
 using Frosty.Sdk.Managers.Entries;
 
 namespace Frosty.Sdk.Resources;
@@ -29,10 +28,6 @@ public class Resource
     }
 
     public virtual void Serialize(DataStream stream)
-    {
-    }
-
-    public virtual void ApplyModifications(ModifiedResource? modifiedResource)
     {
     }
 }

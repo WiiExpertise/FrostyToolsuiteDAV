@@ -19,28 +19,27 @@ public class TypeSdkGenerator
 {
     private long FindTypeInfoOffset(Process process)
     {
-        string[] patterns =
-        {
-            "488b05???????? 48894108 48890d???????? 48???? C3",
-            "488b05???????? 48894108 48890d???????? C3",
-            "488b05???????? 48894108 48890d????????",
-            "488b05???????? 488905???????? 488d05???????? 488905???????? E9",
-            "48391D???????? ???? 488b4310",
-        };
+        // string[] patterns =
+        // {
+        //     "488b05???????? 48894108 48890d???????? 48???? C3",
+        //     "488b05???????? 48894108 48890d???????? C3",
+        //     "488b05???????? 48894108 48890d????????",
+        //     "488b05???????? 488905???????? 488d05???????? 488905???????? E9",
+        //     "48391D???????? ???? 488b4310", // new games
+        // };
         
         long startAddress = process.MainModule?.BaseAddress.ToInt64() ?? 0;
         
         using (MemoryReader reader = new(process, startAddress))
         {
-            IList<long>? offsets = null;
-            foreach (string pattern in patterns)
+            reader.Position = startAddress;
+            IList<long> offsets = reader.Scan(ProfilesLibrary.TypeInfoSignature);
+
+            if (offsets.Count == 0)
             {
-                reader.Position = startAddress;
-                offsets = reader.Scan(pattern);
-                if (offsets.Count != 0)
-                    break;
+                return -1;
             }
-        
+            
             reader.Position = offsets![0] + 3;
             int newValue = reader.ReadInt(false);
             reader.Position = offsets[0] + 3 + newValue + 4;
@@ -51,6 +50,10 @@ public class TypeSdkGenerator
     public bool DumpTypes(Process process)
     {
         long typeInfoOffset = FindTypeInfoOffset(process);
+        if (typeInfoOffset == -1)
+        {
+            return false;
+        }
         using (MemoryReader reader = new(process, typeInfoOffset))
         {
             TypeInfo.TypeInfoMapping.Clear();
@@ -128,15 +131,17 @@ public class TypeSdkGenerator
 
         foreach (Assembly assembly in assemblies)
         {
-            if (!assembly.IsDynamic)
+            if (!assembly.IsDynamic && !string.IsNullOrEmpty(assembly.Location))
             {
                 references.Add(MetadataReference.CreateFromFile(assembly.Location));
             }
         }
 
-        OptimizationLevel level = OptimizationLevel.Release;
+        
 #if EBX_TYPE_SDK_DEBUG
-        level = OptimizationLevel.Debug;
+        OptimizationLevel level = OptimizationLevel.Debug;
+#else
+        OptimizationLevel level = OptimizationLevel.Release;
 #endif
         
         CSharpCompilation compilation = CSharpCompilation.Create("EbxTypes", new[] { syntaxTree }, references,
@@ -159,7 +164,7 @@ public class TypeSdkGenerator
         driver.RunGeneratorsAndUpdateCompilation(
             compilation,
             out Compilation outputCompilation,
-            out ImmutableArray<Diagnostic> _);
+            out _);
 
 #if EBX_TYPE_SDK_DEBUG
         foreach (SyntaxTree tree in outputCompilation.SyntaxTrees)

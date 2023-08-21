@@ -1,14 +1,9 @@
-using System.IO;
-using Frosty.Sdk.IO;
+using System;
+using Frosty.Sdk.Utils;
 
 namespace Frosty.Sdk.Interfaces;
 
 public interface IDeobfuscator
 {
-    /// <summary>
-    /// Deobfuscates stream.
-    /// </summary>
-    /// <param name="stream">The <see cref="DataStream"/> which gets deobfuscated.</param>
-    /// <returns>The deobfuscated stream without the Deobfusctation header.</returns>
-    Stream? Initialize(DataStream stream);
+    public void Deobfuscate(Span<byte> header, Block<byte> data);
 }

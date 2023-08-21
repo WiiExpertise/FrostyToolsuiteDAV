@@ -1,44 +1,161 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
+using Frosty.Sdk.Interfaces;
 using Frosty.Sdk.IO;
 using Frosty.Sdk.Managers.CatResources;
 using Frosty.Sdk.Managers.Infos;
-using Frosty.Sdk.Utils.CompressionTypes;
-using FileInfo = Frosty.Sdk.Managers.Infos.FileInfo;
+using Frosty.Sdk.Managers.Infos.FileInfos;
 
 namespace Frosty.Sdk.Managers;
 
 public static class ResourceManager
 {
-    public static bool IsInitialized;
+    public static bool IsInitialized { get; private set; }
+    
+    private static readonly Dictionary<Sha1, (List<CasFileInfo>, bool)> s_resourceEntries = new();
 
-    private static readonly Dictionary<Sha1, CatResourceEntry> s_resourceEntries = new();
-    private static readonly Dictionary<Sha1, CatPatchEntry> s_patchEntries = new();
-    private static readonly Dictionary<int, string> s_casFiles = new();
+    private static readonly List<CatPatchEntry> s_patchEntries = new();
+
+    private static readonly Dictionary<Sha1, uint> s_sizeMap = new();
+
+    public static void LoadInstallChunks()
+    {
+        foreach (InstallChunkInfo installChunkInfo in FileSystemManager.EnumerateInstallChunks())
+        {
+            LoadInstallChunk(installChunkInfo);
+        }
+    }
+    
+    private static void LoadInstallChunk(InstallChunkInfo info)
+    {
+        Dictionary<Sha1, List<CasFileInfo>>? deltaInfos = LoadEntries(info, true);
+        Dictionary<Sha1, List<CasFileInfo>>? baseInfos = LoadEntries(info, false);
+
+        if (deltaInfos is null)
+        {
+            return;
+        }
+        
+        List<CasFileInfo>? baseFileInfos = null;
+        foreach (CatPatchEntry entry in s_patchEntries)
+        {
+            bool containsBase = baseInfos?.TryGetValue(entry.BaseSha1, out baseFileInfos) == true;
+
+            if (!deltaInfos.TryGetValue(entry.DeltaSha1, out List<CasFileInfo>? deltaFileInfos))
+            {
+                throw new Exception();
+            }
+            
+            Debug.Assert(deltaFileInfos.Count == 1, "More than one Delta entry.");
+
+            CasFileInfo? baseInfo = null; 
+            if (containsBase)
+            {
+                // no idea why there are sometimes more than one base entry
+                Debug.Assert(baseFileInfos!.Count >= 1);
+                baseInfo = baseFileInfos[0];
+            }
+            
+            CasFileInfo fileInfo = new(baseInfo?.GetBase(), deltaFileInfos[0].GetBase());
+            s_resourceEntries.TryAdd(entry.Sha1, (new List<CasFileInfo>(), false));
+            s_resourceEntries[entry.Sha1].Item1.Add(fileInfo);
+        }
+        s_patchEntries.Clear();
+    }
+
+    private static Dictionary<Sha1, List<CasFileInfo>>? LoadEntries(InstallChunkInfo info, bool patch)
+    {
+        string filePath = FileSystemManager.ResolvePath(patch, $"{info.InstallBundle}/cas.cat");
+
+        if (string.IsNullOrEmpty(filePath))
+        {
+            return null;
+        }
+
+        Dictionary<Sha1, List<CasFileInfo>> retVal = new();
+        
+        int installChunkIndex = FileSystemManager.GetInstallChunkIndex(info);
+        
+        using (CatStream stream = new(filePath))
+        {
+            for (int i = 0; i < stream.ResourceCount; i++)
+            {
+                CatResourceEntry entry = stream.ReadResourceEntry();
+                CasFileIdentifier casFileIdentifier = new(patch, installChunkIndex, entry.ArchiveIndex);
+
+                CasFileInfo fileInfo = new(casFileIdentifier, entry.Offset, entry.Size, entry.LogicalOffset);
+                
+                s_resourceEntries.TryAdd(entry.Sha1, (new List<CasFileInfo>(), false));
+                s_resourceEntries[entry.Sha1].Item1.Add(fileInfo);
+
+                if (!s_sizeMap.TryAdd(entry.Sha1, entry.Size))
+                {
+                    s_sizeMap[entry.Sha1] = Math.Max(s_sizeMap[entry.Sha1], entry.Size);
+                }
+                
+                retVal.TryAdd(entry.Sha1, new List<CasFileInfo>());
+                retVal[entry.Sha1].Add(fileInfo);
+            }
+        
+            for (int i = 0; i < stream.EncryptedCount; i++)
+            {
+                CatResourceEntry entry = stream.ReadEncryptedEntry();
+                CasFileIdentifier casFileIdentifier = new(patch, installChunkIndex, entry.ArchiveIndex);
+
+                CasFileInfo fileInfo = new(casFileIdentifier, entry.Offset, entry.Size, entry.LogicalOffset,
+                    entry.KeyId);
+                
+                s_resourceEntries.TryAdd(entry.Sha1, (new List<CasFileInfo>(), false));
+                s_resourceEntries[entry.Sha1].Item1.Add(fileInfo);
+
+                if (!s_sizeMap.TryAdd(entry.Sha1, entry.Size))
+                {
+                    s_sizeMap[entry.Sha1] = Math.Max(s_sizeMap[entry.Sha1], entry.Size);
+                }
+                
+                retVal.TryAdd(entry.Sha1, new List<CasFileInfo>());
+                retVal[entry.Sha1].Add(fileInfo);
+            }
+        
+            for (int i = 0; i < stream.PatchCount; i++)
+            {
+                var entry = stream.ReadPatchEntry();
+                s_patchEntries.Add(entry);
+            }
+        }
+
+        return retVal;
+    }
+
+    public static void CLearInstallChunks()
+    {
+        s_resourceEntries.Clear();
+        s_patchEntries.Clear();
+    }
     
     public static bool Initialize()
     {
+        if (IsInitialized)
+        {
+            return true;
+        }
+
         if (!FileSystemManager.IsInitialized)
         {
             return false;
         }
 
-        foreach (InstallChunkInfo installChunkInfo in FileSystemManager.EnumerateInstallChunks())
-        {
-            LoadCatalog($"native_data/{installChunkInfo.InstallBundle}");
-            LoadCatalog($"native_patch/{installChunkInfo.InstallBundle}");
-        }
-        
         if (FileSystemManager.HasFileInMemoryFs("Dictionaries/ebx.dict"))
         {
             // load dictionary from memoryFs (used for decompressing ebx)
-            ZStd.SetDictionary(FileSystemManager.GetFileFromMemoryFs("Dictionaries/ebx.dict"));
         }
         
         if (FileSystemManager.HasFileInMemoryFs("Scripts/CasEncrypt.yaml"))
         {
-            // load casencrypt.yaml from memoryFs
+            // load CasEncrypt.yaml from memoryFs (used for decrypting data in cas files)
             using (TextReader stream = new StreamReader(new MemoryStream(FileSystemManager.GetFileFromMemoryFs("Scripts/CasEncrypt.yaml"))))
             {
                 byte[]? key = null;
@@ -64,212 +181,74 @@ public static class ResourceManager
                 }
             }
         }
+        
+        foreach (string libOodle in Directory.EnumerateFiles(FileSystemManager.BasePath, "oo2core_*"))
+        {
+            Directory.CreateDirectory("ThirdParty");
 
-        // load oodle library if there is one
-        Oodle.TryBind();
+            string ext = Path.GetExtension(libOodle);
+            string path = $"ThirdParty/oo2core{ext}";
+            File.Delete(path);
+            File.CreateSymbolicLink(path, libOodle);
+            
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && ext == ".dll")
+            {
+                const string oodleHack = "ThirdParty/oo2core.so";
+                File.Delete(oodleHack);
+                File.CreateSymbolicLink(oodleHack, "ThirdParty/liblinoodle.so");
+            }
+            
+            break;
+        }
         
         IsInitialized = true;
         return true;
     }
 
-    #region -- GetResourceData --
-
-    public static Stream GetResourceData(Sha1 sha1)
+    public static long GetSize(Sha1 sha1)
     {
-        // newer games store patch entries in the cat and not in the bundle
-        if (s_patchEntries.TryGetValue(sha1, out CatPatchEntry patchEntry))
-        {
-            return GetResourceData(patchEntry.BaseSha1, patchEntry.DeltaSha1);
-        }
-
-        if (!s_resourceEntries.TryGetValue(sha1, out CatResourceEntry entry))
-        {
-            throw new Exception();
-        }
-
-        if (entry.IsEncrypted && !KeyManager.HasKey(entry.KeyId))
-        {
-            throw new Exception("Missing Key");
-        }
-
-        using (DataStream stream = new(new FileStream(s_casFiles[entry.ArchiveIndex], FileMode.Open, FileAccess.Read)))
-        {
-            using (CasStream reader = new(stream.CreateViewStream(entry.Offset, entry.Size),
-                       (entry.IsEncrypted) ? KeyManager.GetKey(entry.KeyId) : null, entry.EncryptedSize))
-            {
-                return new MemoryStream(reader.Read());
-            }
-        }
-    }
-    
-    public static Stream GetResourceData(Sha1 baseSha1, Sha1 deltaSha1)
-    {
-        if (!s_resourceEntries.TryGetValue(baseSha1, out CatResourceEntry baseEntry) || !s_resourceEntries.TryGetValue(deltaSha1, out CatResourceEntry deltaEntry))
-        {
-            throw new Exception();
-        }
-
-        using (DataStream baseReader = new (new FileStream(s_casFiles[baseEntry.ArchiveIndex], FileMode.Open, FileAccess.Read)))
-        {
-            using (DataStream deltaReader = (deltaEntry.ArchiveIndex == baseEntry.ArchiveIndex) ? baseReader : new(new FileStream(s_casFiles[deltaEntry.ArchiveIndex], FileMode.Open, FileAccess.Read)))
-            {
-                byte[]? baseKey = (baseEntry.IsEncrypted && KeyManager.HasKey(baseEntry.KeyId)) ? KeyManager.GetKey(baseEntry.KeyId) : null;
-                byte[]? deltaKey = (deltaEntry.IsEncrypted && KeyManager.HasKey(deltaEntry.KeyId)) ? KeyManager.GetKey(deltaEntry.KeyId) : null;
-
-                if (baseEntry.IsEncrypted && baseKey == null || deltaEntry.IsEncrypted && deltaKey == null)
-                {
-                    throw new Exception("Missing Key");
-                }
-
-                using (CasStream reader =
-                       new(baseReader.CreateViewStream(baseEntry.Offset, baseEntry.Size), baseKey,
-                           baseEntry.EncryptedSize,
-                           deltaReader.CreateViewStream(deltaEntry.Offset, deltaEntry.Size), deltaKey,
-                           deltaEntry.EncryptedSize))
-                {
-                    return new MemoryStream(reader.Read());
-                }
-            }
-        }
+        return s_sizeMap.TryGetValue(sha1, out uint size) ? size : -1;
     }
 
-    public static Stream GetResourceData(FileInfo fileInfo)
+    public static IEnumerable<IFileInfo>? GetPatchFileInfos(Sha1 sha1, Sha1 deltaSha1, Sha1 baseSha1)
     {
-        using (DataStream stream = new(new FileStream(fileInfo.Path, FileMode.Open, FileAccess.Read)))
+        if (!s_resourceEntries.TryGetValue(sha1, out (List<CasFileInfo>, bool) fileInfos))
         {
-            using (CasStream casStream = new(stream.CreateViewStream(fileInfo.Offset, fileInfo.Size)))
-            {
-                return new MemoryStream(casStream.Read());
-            }
-        }
-    }
-
-    #endregion
-
-    #region -- GetRawResourceData --
-
-    public static Stream GetRawResourceData(Sha1 sha1)
-    {
-        // newer games store patch entries in the cat and not in the bundle
-        if (s_patchEntries.TryGetValue(sha1, out CatPatchEntry patchEntry))
-        {
-            return GetRawResourceData(patchEntry.BaseSha1, patchEntry.DeltaSha1);
+            return null;
         }
 
-        if (!s_resourceEntries.TryGetValue(sha1, out CatResourceEntry entry))
+        if (fileInfos.Item2)
         {
-            throw new Exception();
+            return null;
         }
+        
+        List<CasFileInfo> baseInfos = s_resourceEntries[baseSha1].Item1;
+        List<CasFileInfo> deltaInfos = s_resourceEntries[deltaSha1].Item1;
 
-        if (entry.IsEncrypted/* && !KeyManager.HasKey(entry.KeyId)*/)
+        for (int j = 0; j < baseInfos.Count; j++)
         {
-            //throw new Exception("Missing Key");
-            throw new NotImplementedException();
-        }
-
-        using (DataStream stream = new(new FileStream(s_casFiles[entry.ArchiveIndex], FileMode.Open, FileAccess.Read)))
-        {
-            stream.Position = entry.Offset;
-            return new MemoryStream(stream.ReadBytes((int)entry.Size));
-        }
-    }
-    
-    public static Stream GetRawResourceData(Sha1 baseSha1, Sha1 deltaSha1)
-    {
-        if (!s_resourceEntries.TryGetValue(baseSha1, out CatResourceEntry baseEntry) || !s_resourceEntries.TryGetValue(deltaSha1, out CatResourceEntry deltaEntry))
-        {
-            throw new Exception();
-        }
-
-        using (DataStream baseReader = new (new FileStream(s_casFiles[baseEntry.ArchiveIndex], FileMode.Open, FileAccess.Read)))
-        {
-            using (DataStream deltaReader = (deltaEntry.ArchiveIndex == baseEntry.ArchiveIndex) ? baseReader : new(new FileStream(s_casFiles[deltaEntry.ArchiveIndex], FileMode.Open, FileAccess.Read)))
-            {
-                byte[]? baseKey = (baseEntry.IsEncrypted && KeyManager.HasKey(baseEntry.KeyId)) ? KeyManager.GetKey(baseEntry.KeyId) : null;
-                byte[]? deltaKey = (deltaEntry.IsEncrypted && KeyManager.HasKey(deltaEntry.KeyId)) ? KeyManager.GetKey(deltaEntry.KeyId) : null;
-
-                if (baseEntry.IsEncrypted && baseKey == null || deltaEntry.IsEncrypted && deltaKey == null)
-                {
-                    throw new Exception("Missing Key");
-                }
-
-                throw new NotImplementedException();
-            }
-        }
-    }
-
-    public static Stream GetRawResourceData(FileInfo fileInfo)
-    {
-        using (DataStream stream = new(new FileStream(fileInfo.Path, FileMode.Open, FileAccess.Read)))
-        {
-            stream.Position = fileInfo.Offset;
-            return new MemoryStream(stream.ReadBytes((int)fileInfo.Size));
-        }
-    }
-    
-    #endregion
-
-    /// <summary>
-    /// Loads all entries from the cas.cat file if it exists.
-    /// </summary>
-    /// <param name="installBundle">Name of the InstallBundle with data/patch prefix.</param>
-    private static void LoadCatalog(string installBundle)
-    {
-        string fullPath = FileSystemManager.ResolvePath($"{installBundle}/cas.cat");
-        if (!File.Exists(fullPath))
-        {
-            return;
-        }
-
-        using (CatStream stream = new(new FileStream(fullPath, FileMode.Open, FileAccess.Read)))
-        {
-            // make sure the dicts are big enough
-            s_resourceEntries.EnsureCapacity((int)(s_resourceEntries.Count + stream.ResourceCount + stream.EncryptedCount));
-            s_patchEntries.EnsureCapacity((int)(s_patchEntries.Count + stream.PatchCount));
+            CasFileInfo fileInfo = new(deltaInfos[j].GetBase(), baseInfos[j].GetBase());
             
-            for (int i = 0; i < stream.ResourceCount; i++)
-            {
-                CatResourceEntry entry = stream.ReadResourceEntry();
-                entry.ArchiveIndex = AddCas(installBundle, entry.ArchiveIndex);
-        
-                if (entry.LogicalOffset == 0)
-                {
-                    s_resourceEntries.TryAdd(entry.Sha1, entry);
-                }
-            }
-        
-            for (int i = 0; i < stream.EncryptedCount; i++)
-            {
-                CatResourceEntry entry = stream.ReadEncryptedEntry();
-                entry.ArchiveIndex = AddCas(installBundle, entry.ArchiveIndex);
-        
-                if (entry.LogicalOffset == 0)
-                {
-                    s_resourceEntries.TryAdd(entry.Sha1, entry);
-                }
-            }
-        
-            for (int i = 0; i < stream.PatchCount; i++)
-            {
-                CatPatchEntry entry = stream.ReadPatchEntry();
-                s_patchEntries.TryAdd(entry.Sha1, entry);
-            }
+            s_resourceEntries.TryAdd(sha1, (new List<CasFileInfo>(), true));
+            s_resourceEntries[sha1].Item1.Add(fileInfo);
         }
+
+        return s_resourceEntries[sha1].Item1;
     }
-    
-    /// <summary>
-    /// Adds a cas file to a hashmap for lookup.
-    /// </summary>
-    /// <param name="installBundle">The name of the InstallBundle of the InstallChunk with data/patch prefix.</param>
-    /// <param name="archiveIndex">The index of the cas.</param>
-    /// <returns></returns>
-    private static int AddCas(string installBundle, int archiveIndex)
+
+    public static IEnumerable<IFileInfo>? GetFileInfos(Sha1 sha1)
     {
-        string casFilename = $"{installBundle}/cas_{archiveIndex:d2}.cas";
-        int hash = Utils.Utils.HashString(casFilename, true);
+        if (!s_resourceEntries.TryGetValue(sha1, out (List<CasFileInfo>, bool) fileInfos))
+        {
+            return null;
+        }
 
-        s_casFiles.TryAdd(hash, FileSystemManager.ResolvePath(casFilename));
+        if (fileInfos.Item2)
+        {
+            return null;
+        }
 
-        return hash;
+        fileInfos.Item2 = true;
+        return fileInfos.Item1;
     }
 }

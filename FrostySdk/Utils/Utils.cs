@@ -1,8 +1,6 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Runtime.Serialization.Formatters.Binary;
 using System.Security.Cryptography;
 using Frosty.Sdk.Ebx;
 using Frosty.Sdk.IO;
@@ -35,65 +33,66 @@ public static class Utils
         Guid outGuid;
 
         int createCount = 0;
-        foreach (object obj in objects)
+        HashSet<Guid> existingGuids = new();
+        foreach (dynamic obj in objects)
+        {
+            AssetClassGuid objGuid = obj.GetInstanceGuid();
+            existingGuids.Add(objGuid.ExportedGuid);
             createCount++;
+        }
+        
+        Block<byte> buffer = new(stackalloc byte[20]);
 
+        Span<byte> result = stackalloc byte[16];
         while (true)
         {
             // generate a deterministic unique guid
-            using (DataStream writer = new (new MemoryStream()))
+            using (DataStream writer = new(buffer.ToStream()))
             {
                 writer.WriteGuid(fileGuid);
                 writer.WriteInt32(++createCount);
+            }
 
-                using (MD5 md5 = MD5.Create())
-                {
-                    outGuid = new Guid(md5.ComputeHash(writer.ToByteArray()));
-                    bool bFound = false;
-                    foreach (dynamic obj in objects)
-                    {
-                        AssetClassGuid objGuid = obj.GetInstanceGuid();
-                        if (objGuid.ExportedGuid == outGuid)
-                        {
-                            // try again
-                            bFound = true;
-                            break;
-                        }
-                    }
+            MD5.HashData(buffer.ToSpan(), result);
+            outGuid = new Guid(result);
 
-                    if (!bFound)
-                        break;
-                }
+            if (!existingGuids.Contains(outGuid))
+            {
+                break;
             }
         }
+        
+        buffer.Dispose();
 
         return outGuid;
     }
 
-    public static Sha1 GenerateSha1(byte[] buffer)
+    public static Sha1 GenerateSha1(ReadOnlySpan<byte> buffer)
     {
-        Sha1 newSha1 = new Sha1(SHA1.HashData(buffer));
+        Span<byte> hashed = stackalloc byte[20];
+        SHA1.HashData(buffer, hashed);
+        Sha1 newSha1 = new(hashed);
         return newSha1;
     }
 
     public static ulong GenerateResourceId()
     {
-        Random random = new Random();
+        Random random = new();
 
         const ulong min = ulong.MinValue;
         const ulong max = ulong.MaxValue;
 
-        const ulong uRange = (ulong)(max - min);
+        const ulong uRange = max - min;
         ulong ulongRand;
 
+        Span<byte> buf = stackalloc byte[8];
         do
         {
-            byte[] buf = new byte[8];
             random.NextBytes(buf);
-            ulongRand = (ulong)BitConverter.ToInt64(buf, 0);
+            ulongRand = BinaryPrimitives.ReadUInt64LittleEndian(buf);
 
-        } while (ulongRand > ulong.MaxValue - ((ulong.MaxValue % uRange) + 1) % uRange);
+        } while (ulongRand > max - (max % uRange + 1) % uRange);
 
-        return ((ulongRand % uRange) + min) | 1;
+        return (ulongRand % uRange + min) | 1;
     }
 }

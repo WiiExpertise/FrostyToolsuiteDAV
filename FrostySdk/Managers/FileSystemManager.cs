@@ -1,16 +1,20 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
+using Frosty.Sdk.DbObjectElements;
+using Frosty.Sdk.Deobfuscators;
 using Frosty.Sdk.Interfaces;
 using Frosty.Sdk.IO;
 using Frosty.Sdk.Managers.Infos;
+using Frosty.Sdk.Utils;
 
 namespace Frosty.Sdk.Managers;
 
 public static class FileSystemManager
 {
-    public static bool IsInitialized;
+    public static bool IsInitialized { get; private set; }
 
     public static string BasePath = string.Empty;
     public static string CacheName = string.Empty;
@@ -18,11 +22,16 @@ public static class FileSystemManager
     public static uint Base;
     public static uint Head;
 
-    public static DbObject? Manifest;
+    public static BundleFormat BundleFormat;
+
+    public static GamePlatform GamePlatform = GamePlatform.Invalid;
+
+    public static DbObjectDict? Manifest;
 
     private static readonly List<string> s_paths = new();
 
     private static readonly List<SuperBundleInfo> s_superBundles = new();
+    private static readonly Dictionary<int, int> s_persistentIndexMap = new();
     private static readonly List<InstallChunkInfo> s_installChunks = new();
     private static readonly List<string> s_casFiles = new();
     
@@ -31,19 +40,27 @@ public static class FileSystemManager
 
     public static bool Initialize(string basePath)
     {
+        if (IsInitialized)
+        {
+            return true;
+        }
+
+        if (!ProfilesLibrary.IsInitialized)
+        {
+            return false;
+        }
+
         if (!Directory.Exists(basePath))
         {
             return false;
         }
 
-        BasePath = basePath;
-        if (!BasePath.EndsWith("\\") || !BasePath.EndsWith("/"))
-        {
-            BasePath = $"{BasePath}\\";
-        }
+        BasePath = Path.GetFullPath(basePath);
 
-        CacheName = $"Caches/{ProfilesLibrary.CacheName}";
-        s_deobfuscator = Type.GetType($"Frosty.Sdk.Deobfuscators.{ProfilesLibrary.Deobfuscator}Deobfuscator");
+        CacheName = $"Caches/{ProfilesLibrary.InternalName}";
+        s_deobfuscator = ProfilesLibrary.FrostbiteVersion > "2014.4.11"
+            ? typeof(SignatureDeobfuscator)
+            : typeof(LegacyDeobfuscator);
 
         foreach (FileSystemSource source in ProfilesLibrary.Sources)
         {
@@ -92,18 +109,49 @@ public static class FileSystemManager
 
         for (int i = startCount; i < endCount; i++)
         {
-            if (File.Exists($"{BasePath}{s_paths[i]}{filename}") || Directory.Exists($"{BasePath}{s_paths[i]}{filename}"))
+            string path = Path.Combine(BasePath, s_paths[i], filename);
+            if (File.Exists(path) || Directory.Exists(path))
             {
-                return $"{BasePath}{s_paths[i]}{filename}".Replace("\\\\", "\\");
+                return path;
             }
         }
         return string.Empty;
     }
 
-    public static string GetFilePath(ICasFileInfo casFileInfo)
+    public static string ResolvePath(bool isPatch, string filename)
     {
-        InstallChunkInfo installChunkInfo = s_installChunks[casFileInfo.GetInstallChunkIndex()];
-        return $"{(casFileInfo.GetIsPatch() ? "native_patch/" : "native_data/")}{installChunkInfo.InstallBundle}/cas_{casFileInfo.GetCasIndex():D2}.cas";
+        if (isPatch && s_paths.Count == 1)
+        {
+            return string.Empty;
+        }
+
+        int startCount = 0;
+        int endCount = s_paths.Count;
+
+        if (!isPatch && s_paths.Count > 1)
+        {
+            startCount = 1;
+        }
+        else if (isPatch)
+        {
+            endCount = 1;
+        }
+
+        for (int i = startCount; i < endCount; i++)
+        {
+            string path = Path.Combine(BasePath, s_paths[i], filename);
+            if (File.Exists(path) || Directory.Exists(path))
+            {
+                return path;
+            }
+        }
+        return string.Empty;
+    }
+    
+    public static string GetFilePath(CasFileIdentifier casFileIdentifier)
+    {
+        InstallChunkInfo installChunkInfo = s_installChunks[s_persistentIndexMap[casFileIdentifier.InstallChunkIndex]];
+        return $"{(casFileIdentifier.IsPatch ? "native_patch/" : "native_data/")}{installChunkInfo.InstallBundle}/cas_{casFileIdentifier.CasIndex:D2}.cas";
     }
     
     public static string GetFilePath(int casIndex)
@@ -111,6 +159,11 @@ public static class FileSystemManager
         return s_casFiles[casIndex];
     }
 
+    public static string GetPatchPath()
+    {
+        return s_paths[0];
+    }
+    
     public static IDeobfuscator? CreateDeobfuscator() => s_deobfuscator != null ? (IDeobfuscator?)Activator.CreateInstance(s_deobfuscator) : null;
 
     public static IEnumerable<SuperBundleInfo> EnumerateSuperBundles()
@@ -131,7 +184,18 @@ public static class FileSystemManager
 
     public static InstallChunkInfo GetInstallChunkInfo(int index)
     {
-        return s_installChunks[index];
+        return s_installChunks[s_persistentIndexMap[index]];
+    }
+    
+    public static InstallChunkInfo GetInstallChunkInfo(Guid id)
+    {
+        return s_installChunks.FirstOrDefault(ic => ic.Id == id) ?? throw new KeyNotFoundException();
+    }
+
+    public static int GetInstallChunkIndex(InstallChunkInfo info)
+    {
+        // TODO: works for now, since we only call this for the cat which doesnt have a persistent index, but we should create a dict for the reverse thing
+        return s_installChunks.IndexOf(info);
     }
     
     public static bool HasFileInMemoryFs(string name) => s_memoryFs.ContainsKey(name);
@@ -139,36 +203,39 @@ public static class FileSystemManager
 
     private static void AddSource(string path, bool iterateSubPaths)
     {
-        if (!Directory.Exists($"{BasePath}{path}"))
+        string fullPath = Path.Combine(BasePath, path);
+        if (!Directory.Exists(fullPath))
         {
             return;
         }
 
         if (iterateSubPaths)
         {
-            foreach (string subPath in Directory.EnumerateDirectories($"{BasePath}{path}", "*", SearchOption.AllDirectories))
+            foreach (string subPath in Directory.EnumerateDirectories(fullPath, "*", SearchOption.AllDirectories))
             {
-                if (subPath.Contains("\\Patch", StringComparison.OrdinalIgnoreCase))
+                if (subPath.Contains("Patch", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
 
-                if (!File.Exists($"{subPath}\\package.mft"))
+                if (!File.Exists(Path.Combine(subPath, "package.mft")))
                 {
                     continue;
                 }
 
-                s_paths.Add($"\\{subPath.Replace(BasePath, "")}\\Data\\");
+                s_paths.Add(Path.Combine(Path.GetRelativePath(BasePath, subPath), "Data"));
             }
         }
         else
         {
-            s_paths.Add($"\\{path}\\");
+            s_paths.Add(path);
         }
     }
     
     private static bool LoadInitFs(string name)
     {
+        ParseGamePlatform(name.Remove(0, 7));
+        
         string path = ResolvePath(name);
         if (string.IsNullOrEmpty(path))
         {
@@ -177,130 +244,166 @@ public static class FileSystemManager
         
         DbObject? initFs = DbObject.Deserialize(path);
 
-        if (initFs == null)
+        if (initFs is null)
         {
             return false;
         }
 
-        if (initFs.GetDbType() == DbType.Object && initFs.ContainsKey("encrypted"))
+        if (initFs.IsDict())
         {
-            if (!KeyManager.HasKey("InitFsKey"))
-            {
-                return false;
-            }
-            byte[] key = KeyManager.GetKey("InitFsKey");
-            byte[] buffer = initFs["encrypted"].As<byte[]>();
-
-            using (Aes aes = Aes.Create())
-            {
-                aes.Key = key;
-                aes.IV = key;
-
-                ICryptoTransform transform = aes.CreateDecryptor();
-
-                using (DataStream stream = new(new MemoryStream(buffer.Length)))
-                {
-                    using (CryptoStream cryptoStream = new(new MemoryStream(buffer), transform, CryptoStreamMode.Read))
-                    {
-                        cryptoStream.CopyTo(stream);
-                    }
-                    stream.Position = 0;
-                    initFs = DbObject.Deserialize(stream);
-
-                    if (initFs == null)
-                    {
-                        return false;
-                    }
-                }
-            }
-        }
-
-        foreach (DbObject fileStub in initFs)
-        {
-            DbObject file = fileStub["$file"].As<DbObject>();
-            string fileName = file["name"].As<string>();
-
-            s_memoryFs.TryAdd(fileName, file["payload"].As<byte[]>());
-        }
-        return true;
-    }
-    
-    private static bool ProcessLayouts()
-    {
-        string baseLayoutPath = ResolvePath("native_data/layout.toc");
-        string patchLayoutPath = ResolvePath("native_patch/layout.toc");
-        
-        // Process base layout.toc
-        DbObject? baseLayout =DbObject.Deserialize(baseLayoutPath);
-
-        if (baseLayout == null)
-        {
-            return false;
-        }
-        
-        foreach (DbObject superBundle in baseLayout["superBundles"].As<DbObject>())
-        {
-            s_superBundles.Add(new SuperBundleInfo(superBundle["name"].As<string>()));
-        }
-
-        if (patchLayoutPath != "")
-        {
-            // Process patch layout.toc
-            DbObject? patchLayout = DbObject.Deserialize(patchLayoutPath);
-
-            if (patchLayout == null)
+            if (!initFs.AsDict().ContainsKey("encrypted"))
             {
                 return false;
             }
             
-            foreach (DbObject superBundle in patchLayout["superBundles"].As<DbObject>())
+            if (!KeyManager.HasKey("InitFsKey"))
+            {
+                return false;
+            }
+            
+            using (BlockStream stream = new(new Block<byte>(initFs.AsDict().AsBlob("encrypted"))))
+            {
+                stream.Decrypt(KeyManager.GetKey("InitFsKey"), PaddingMode.PKCS7);
+                
+                initFs = DbObject.Deserialize(stream);
+
+                if (initFs is null)
+                {
+                    return false;
+                }
+            }
+        }
+
+        foreach (DbObject fileStub in initFs.AsList())
+        {
+            DbObjectDict file = fileStub.AsDict().AsDict("$file");
+            string fileName = file.AsString("name");
+
+            s_memoryFs.TryAdd(fileName, file.AsBlob("payload"));
+        }
+        return true;
+    }
+
+    private static void ParseGamePlatform(string platform)
+    {
+        if (GamePlatform != GamePlatform.Invalid)
+        {
+            return;
+        }
+        switch (platform)
+        {
+            case "Win32":
+                GamePlatform = GamePlatform.Win32;
+                break;
+            case "Linux":
+                GamePlatform = GamePlatform.Linux;
+                break;
+            case "Xenon":
+                GamePlatform = GamePlatform.Xenon;
+                break;
+            case "Gen4a":
+                GamePlatform = GamePlatform.Gen4a;
+                break;
+            case "Ps3":
+                GamePlatform = GamePlatform.Ps3;
+                break;
+            case "Gen4b":
+                GamePlatform = GamePlatform.Gen4b;
+                break;
+            case "Nx":
+                GamePlatform = GamePlatform.Nx;
+                break;
+            default:
+                throw new NotImplementedException($"GamePlatform not implemented: {platform}");
+        }
+    }
+    
+    private static bool ProcessLayouts()
+    {
+        string baseLayoutPath = ResolvePath(false, "layout.toc");
+        string patchLayoutPath = ResolvePath(true, "layout.toc");
+
+        if (string.IsNullOrEmpty(baseLayoutPath))
+        {
+            return false;
+        }
+        
+        // Process base layout.toc
+        DbObjectDict? baseLayout = DbObject.Deserialize(baseLayoutPath)?.AsDict();
+
+        if (baseLayout is null)
+        {
+            return false;
+        }
+
+        string kelvinPath = ResolvePath("kelvin.toc");
+        if (!string.IsNullOrEmpty(kelvinPath))
+        {
+            BundleFormat = BundleFormat.Kelvin;
+        }
+        
+        foreach (DbObject superBundle in baseLayout.AsDict().AsList("superBundles"))
+        {
+            s_superBundles.Add(new SuperBundleInfo(superBundle.AsDict().AsString("name")));
+        }
+
+        if (!string.IsNullOrEmpty(patchLayoutPath))
+        {
+            // Process patch layout.toc
+            DbObjectDict? patchLayout = DbObject.Deserialize(patchLayoutPath)?.AsDict();
+
+            if (patchLayout is null)
+            {
+                return false;
+            }
+            
+            foreach (DbObject superBundle in patchLayout.AsList("superBundles"))
             {
                 // Merge super bundles
-                string superBundleName = superBundle["name"].As<string>();
+                string superBundleName = superBundle.AsDict().AsString("name");
                 if (s_superBundles.FindIndex(si => si.Name.Equals(superBundleName, StringComparison.OrdinalIgnoreCase)) == -1)
                 {
                     s_superBundles.Add(new SuperBundleInfo(superBundleName));
                 }
             }
 
-            Base = patchLayout["base"].As<uint>();
-            Head = patchLayout["head"].As<uint>();
+            Base = patchLayout.AsUInt("base");
+            Head = patchLayout.AsUInt("head");
 
-            if (!ProcessInstallChunks(patchLayout))
+            if (!ProcessInstallChunks(patchLayout.AsDict("installManifest", null)))
             {
                 return false;
             }
 
-            if (patchLayout.ContainsKey("manifest"))
+            Manifest = patchLayout.AsDict("manifest", null);
+            if (Manifest is not null)
             {
-                Manifest = patchLayout["manifest"].As<DbObject>();
+                BundleFormat = BundleFormat.SuperBundleManifest;
             }
             
-            if (!LoadInitFs(patchLayout["fs"].As<DbObject>()[0].As<string>()))
+            if (!LoadInitFs(patchLayout.AsList("fs")[0].AsString()))
             {
                 return false;
             }
         }
         else
         {
-            if (baseLayout.ContainsKey("base"))
-            {
-                // TODO: is base only in patch ???
-                Base = baseLayout["base"].As<uint>();
-            }
-            Head = baseLayout["head"].As<uint>();
+            Base = baseLayout.AsUInt("base");
+            Head = baseLayout.AsUInt("head");
 
-            if (!ProcessInstallChunks(baseLayout))
+            if (!ProcessInstallChunks(baseLayout.AsDict("installManifest", null)))
             {
                 return false;
             }
 
-            if (baseLayout.ContainsKey("manifest"))
+
+            Manifest = baseLayout.AsDict("manifest", null);
+            if (Manifest is not null)
             {
-                Manifest = baseLayout["manifest"].As<DbObject>();
+                BundleFormat = BundleFormat.SuperBundleManifest;
             }
             
-            if (!LoadInitFs(baseLayout["fs"].As<DbObject>()[0].As<string>()))
+            if (!LoadInitFs(baseLayout.AsList("fs")[0].AsString()))
             {
                 return false;
             }
@@ -308,40 +411,56 @@ public static class FileSystemManager
         return true;
     }
 
-    private static bool ProcessInstallChunks(DbObject layout)
+    private static bool ProcessInstallChunks(DbObjectDict? installManifest)
     {
         // Only if an install manifest exists
-        if (layout.ContainsKey("installManifest"))
+        if (installManifest is null)
         {
-            DbObject installManifest = layout["installManifest"].As<DbObject>();
-            foreach (DbObject installChunk in installManifest["installChunks"].As<DbObject>())
+            // Older games dont have an InstallManifest, they have one InstallChunk in the data/patch folder
+            InstallChunkInfo ci = new();
+            foreach (SuperBundleInfo si in s_superBundles)
             {
-                if (installChunk.ContainsKey("testDLC") && installChunk["testDLC"].As<bool>())
+                ci.SuperBundles.Add(si.Name);
+
+                si.InstallChunks.Add(0, InstallChunkType.Default);
+            }
+
+            s_installChunks.Add(ci);
+        }
+        else
+        {
+            string platform = installManifest.AsString("platform");
+            if (!string.IsNullOrEmpty(platform))
+            {
+                ParseGamePlatform(platform);
+            }
+            
+            // check for platform, else we get it from the initFs
+            foreach (DbObject installChunk in installManifest.AsList("installChunks"))
+            {
+                if (installChunk.AsDict().AsBoolean("testDLC"))
                 {
                     continue;
                 }
 
                 InstallChunkInfo info = new()
                 {
-                    Id = installChunk["id"].As<Guid>(),
-                    Name = installChunk["name"].As<string>(),
-                    InstallBundle = installChunk.ContainsKey("installBundle") ? installChunk["installBundle"].As<string>() : string.Empty,
-                    AlwaysInstalled = installChunk.ContainsKey("alwaysInstalled") && installChunk["alwaysInstalled"].As<bool>()
+                    Id = installChunk.AsDict().AsGuid("id"),
+                    Name = installChunk.AsDict().AsString("name"),
+                    InstallBundle = installChunk.AsDict().AsString("installBundle"),
+                    AlwaysInstalled = installChunk.AsDict().AsBoolean("alwaysInstalled")
                 };
-                    
-                int index = installChunk.ContainsKey("persistentIndex") ? installChunk["persistentIndex"].As<int>() : s_installChunks.Count;
-                while (s_installChunks.Count <= index)
-                {
-                    s_installChunks.Add(new InstallChunkInfo());
-                }
 
-                s_installChunks[index] = info;
-                
-                foreach (string superBundle in installChunk["superBundles"].As<DbObject>())
+                int index = installChunk.AsDict().AsInt("persistentIndex", s_installChunks.Count);
+                s_persistentIndexMap.Add(index, s_installChunks.Count);
+                s_installChunks.Add(info);
+
+                foreach (DbObject superBundle in installChunk.AsDict().AsList("superbundles"))
                 {
-                    info.SuperBundles.Add(superBundle);
-                        
-                    SuperBundleInfo sb = s_superBundles.Find(si => si.Name.Equals(superBundle, StringComparison.OrdinalIgnoreCase))!;
+                    info.SuperBundles.Add(superBundle.AsString());
+
+                    SuperBundleInfo sb = s_superBundles.Find(si =>
+                        si.Name.Equals(superBundle.AsString(), StringComparison.OrdinalIgnoreCase))!;
                     if (!sb.InstallChunks.ContainsKey(index))
                     {
                         sb.InstallChunks.Add(index, InstallChunkType.Default);
@@ -352,22 +471,22 @@ public static class FileSystemManager
                     }
                 }
 
-                foreach (Guid requiredChunk in installChunk["requiredChunks"].As<DbObject>())
+                foreach (DbObject requiredChunk in installChunk.AsDict().AsList("requiredChunks"))
                 {
-                    info.RequiredCatalogs.Add(requiredChunk);
+                    info.RequiredCatalogs.Add(requiredChunk.AsGuid());
                 }
 
-                if (installChunk.ContainsKey("files"))
+                if (installChunk.AsDict().ContainsKey("files"))
                 {
-                    foreach (DbObject fileObj in installChunk["files"].As<DbObject>())
+                    foreach (DbObject fileObj in installChunk.AsDict().AsList("files"))
                     {
-                        int casId = fileObj["id"].As<int>();
+                        int casId = fileObj.AsDict().AsInt("id");
                         while (s_casFiles.Count <= casId)
                         {
-                            s_casFiles.Add("");
+                            s_casFiles.Add(string.Empty);
                         }
 
-                        string casPath = fileObj["path"].As<string>().Trim('/');
+                        string casPath = fileObj.AsDict().AsString("path").Trim('/');
                         casPath = casPath.Replace("native_data/Data", "native_data");
                         casPath = casPath.Replace("native_data/Patch", "native_patch");
 
@@ -375,14 +494,15 @@ public static class FileSystemManager
                     }
                 }
 
-                if (installChunk.ContainsKey("splitSuperBundles"))
+                if (installChunk.AsDict().ContainsKey("splitSuperbundles"))
                 {
-                    foreach (DbObject superBundleContainer in installChunk["splitSuperBundles"].As<DbObject>())
+                    foreach (DbObject superBundleContainer in installChunk.AsDict().AsList("splitSuperbundles"))
                     {
-                        string superBundle = superBundleContainer["superBundle"].As<string>();
+                        string superBundle = superBundleContainer.AsDict().AsString("superbundle");
                         info.SplitSuperBundles.Add(superBundle);
 
-                        SuperBundleInfo sb = s_superBundles.Find(si => si.Name.Equals(superBundle, StringComparison.OrdinalIgnoreCase))!;
+                        SuperBundleInfo sb = s_superBundles.Find(si =>
+                            si.Name.Equals(superBundle, StringComparison.OrdinalIgnoreCase))!;
                         if (!sb.InstallChunks.ContainsKey(index))
                         {
                             sb.InstallChunks.Add(index, InstallChunkType.Split);
@@ -394,24 +514,33 @@ public static class FileSystemManager
                     }
                 }
 
-                if (installChunk.ContainsKey("splitTocs"))
+                if (installChunk.AsDict().ContainsKey("splitTocs"))
                 {
-                    throw new NotImplementedException("splitTocs");
+                    foreach (DbObject superBundleContainer in installChunk.AsDict().AsList("splitTocs"))
+                    {
+                        string superBundle = superBundleContainer.AsDict().AsString("superbundle");
+                        info.SplitSuperBundles.Add(superBundle);
+
+                        SuperBundleInfo sb = s_superBundles.Find(si =>
+                            si.Name.Equals(superBundle, StringComparison.OrdinalIgnoreCase))!;
+                        if (!sb.InstallChunks.ContainsKey(index))
+                        {
+                            sb.InstallChunks.Add(index, InstallChunkType.Split);
+                        }
+                        else
+                        {
+                            sb.InstallChunks[index] |= InstallChunkType.Split;
+                        }
+                    }
                 }
             }
-        }
-        else
-        {
-            // Older games dont have an InstallManifest, they have one InstallChunk in the data/patch folder
-            InstallChunkInfo ci = new();
-            foreach (SuperBundleInfo si in s_superBundles)
-            {
-                ci.SuperBundles.Add(si.Name);
 
-                si.InstallChunks.Add(0, InstallChunkType.Default);
+            if (installManifest.ContainsKey("settings"))
+            {
+                BundleFormat = (BundleFormat)installManifest.AsDict("settings").AsLong("bundleFormat");
             }
-            s_installChunks.Add(ci);
         }
+
         return true;
     }
 }

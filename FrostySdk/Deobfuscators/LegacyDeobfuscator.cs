@@ -1,38 +1,20 @@
-﻿using System.IO;
+﻿using System;
 using Frosty.Sdk.Interfaces;
-using Frosty.Sdk.IO;
+using Frosty.Sdk.Utils;
 
 namespace Frosty.Sdk.Deobfuscators;
 
 public class LegacyDeobfuscator : IDeobfuscator
 {
-    private byte[]? m_key;
-
-    public Stream? Initialize(DataStream stream)
+    public void Deobfuscate(Span<byte> header, Block<byte> data)
     {
-        uint magic = stream.ReadUInt32();
-        if (magic != 0x00CED100 && magic != 0x01CED100 && magic != 0x03CED100)
+        if (header[3] != 0x01)
         {
-            stream.Position = 0;
-            return null;
+            return;
         }
-        
-        stream.Position = 0x22C;
-
-        byte[] data = stream.ReadBytes((int)(stream.Length - 0x22C));
-        
-        if (magic == 0x01CED100)
+        for (int i = 0; i < data.Size; i++)
         {
-            stream.Position = 0x128;
-
-            m_key = stream.ReadBytes(0x101);
-
-            for (int i = 0; i < data.Length; i++)
-            {
-                data[i] ^= (byte)(0x7B ^ m_key[i % 0x101]);
-            }
+            data[i] ^= (byte)(0x7B ^ header[0x128 + i % 0x101]);
         }
-        
-        return new MemoryStream(data);
     }
 }
