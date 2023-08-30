@@ -20,8 +20,8 @@ fxc LinePixelShader.hlsl /Tps_5_0 /Emain /Fo.\Bin\LinePixelShader.pso
 fxc Grid.hlsl /Tvs_5_0 /EVS_Main /Fo.\Bin\Grid.vso
 fxc Grid.hlsl /Tps_5_0 /EPS_Main /Fo.\Bin\Grid.pso
 fxc TXAAResolveDepth.hlsl /Tps_5_0 /EPS_Main /Fo.\Bin\TXAAResolveDepth.pso
-rem fxc EditorComposite.hlsl /Tps_5_0 /EPS_Main /Fo.\Bin\EditorComposite.pso
-rem fxc TXAAResolveDepth.hlsl /Tps_5_0 /EPS_Resolve /Fo.\Bin\Resolve.pso
+fxc EditorComposite.hlsl /Tps_5_0 /EPS_Main /Fo.\Bin\EditorComposite.pso
+fxc TXAAResolveDepth.hlsl /Tps_5_0 /EPS_Resolve /Fo.\Bin\Resolve.pso
 
 fxc HDR.hlsl /Tps_5_0 /EPS_DownScale4x4 /Fo.\Bin\DownScale4x4.pso
 fxc HDR.hlsl /Tps_5_0 /EPS_SampleLumInitial /Fo.\Bin\SampleLumInitial.pso
@@ -112,5 +112,5 @@ fxc UnpackNormals.hlsl /Tcs_5_0 /ECS_UnpackAxisAngle /Fo.\Bin\UnpackAxisAngle.vs
 fxc UnpackNormals.hlsl /Tcs_5_0 /ECS_UnpackQuaternion /Fo.\Bin\UnpackQuaternion.vso
 
 cd ..\FrostyEditor\bin\Developer\Debug
-FrostyCmd.exe "D:\OriginLibrary\originapps\Mass Effect Andromeda\MassEffectAndromeda.exe" shader
-copy ..\..\..\Shaders.bin .\Shaders.bin
+FrostyCmd.exe ..\..\..\..\Shaders\Bin BuildDb
+copy Shaders.bin ..\..\..\..\FrostyPlugin\Shaders.bin

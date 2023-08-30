@@ -171,9 +171,17 @@ namespace FrostyCmd
 
             AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
 
-            // create profile bin
-            ProfileCreator profileCreator = new ProfileCreator();
-            profileCreator.CreateProfiles();
+            //if no arg or single arg build profiles.bin
+            if (args.Length <= 1)
+            {
+                ProfileCreator profileCreator = new ProfileCreator();
+                profileCreator.CreateProfiles();
+            }
+            else //else we build shaders.bin
+            {
+                FrostyShaderDbBuilder shaderDbBuilder = new FrostyShaderDbBuilder();
+                shaderDbBuilder.BuildDb(args[0]);
+            }
 
             //string basePath = args[0];
             //string command = args[1].ToLower();
