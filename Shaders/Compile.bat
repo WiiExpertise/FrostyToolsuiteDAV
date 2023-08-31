@@ -1,3 +1,5 @@
+if not exist Bin mkdir Bin
+
 fxc TextureEditor.hlsl /Tvs_5_0 /EVS_Main /Fo.\Bin\Texture.vso
 fxc TextureEditor.hlsl /Tps_5_0 /EPS_Main /Fo.\Bin\Texture.pso
 fxc SoundWaveEditor.hlsl /Tvs_5_0 /EVS_Main /Fo.\Bin\SoundWave.vso

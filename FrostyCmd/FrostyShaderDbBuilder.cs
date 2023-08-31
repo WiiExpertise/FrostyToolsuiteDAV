@@ -13,6 +13,17 @@ namespace FrostyCmd
         public void BuildDb(string inputPath)
         {
             //gather input binaries from path
+            string[] paths = Directory.GetFiles(inputPath);
+            int index;
+            string[] binarynames = paths; //temporarily store full paths in here
+
+            for (int i = 0; i < paths.Length; i++)
+            {
+                index = paths[i].LastIndexOf("\\");
+                binarynames[i] = paths[i].Remove(0, index + 2); //strip path
+            };
+
+
 
             //build the db
             using (NativeWriter writer = new NativeWriter(new MemoryStream()))
