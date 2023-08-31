@@ -502,7 +502,7 @@ namespace FrostyCmd
                 writer.Write((int)ProfileVersion.StarWarsBattlefrontII);
                 writer.WriteObfuscatedString("starwarsii");
                 writer.WriteObfuscatedString(typeof(NullDeobfuscator).Name);
-                writer.WriteObfuscatedString(AssetManager.GetLoaderName("ManifestAssetLoader"));
+                writer.WriteObfuscatedString(AssetManager.GetLoaderName("StandardAssetLoader"));
                 writer.Write(CreateSources("Patch;false", "Update;true", "Data;false"));
                 writer.WriteObfuscatedString("StarWarsIISDK");
                 writer.Write(CreateBanner("SWBF2"));
