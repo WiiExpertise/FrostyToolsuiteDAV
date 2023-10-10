@@ -130,7 +130,7 @@ namespace Frosty.Core.Windows
                             continue;
 
                         FileInfo fi = new FileInfo(processFilename);
-                        if (fi.Name.IndexOf(ProfilesLibrary.ProfileName, StringComparison.OrdinalIgnoreCase) >= 0)
+                        if (fi.Name.IndexOf("EAAntiCheat.GameServiceLauncher", StringComparison.OrdinalIgnoreCase) >= 0)
                         {
                             foundProcess = process;
                             break;
